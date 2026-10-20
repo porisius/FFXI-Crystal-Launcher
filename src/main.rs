@@ -7859,6 +7859,59 @@ mod tests {
     fn signed_out() -> launch_log::ExitReport { launch_log::classify_loader_end(&launch_log::LoaderEnd::SignedOut, Duration::from_secs(900)) }
 
     #[test]
+    fn private_clean_exit_after_game_seen_is_not_a_startup_failure() {
+        let mut app = app();
+        app.preview = false;
+        app.settings.sign_in_after_game = false;
+        app.accounts[0].account.mode = AccountMode::Private;
+
+        // The shared loader classifier intentionally considers a quick Exit(0)
+        // a startup failure. Private xiloader sessions override that only after
+        // the launcher has actually observed FFXI running.
+        let report = launch_log::classify_loader_end(
+            &launch_log::LoaderEnd::Exit(0),
+            Duration::from_secs(5),
+        );
+
+        assert!(report.during_startup);
+        assert_eq!(report.exit_status, Some(0));
+        assert!(report.is_problem());
+
+        game_ends(&mut app, 0, report);
+
+        let row = &app.accounts[0];
+        assert!(!row.problem);
+        assert_eq!(row.status, "Client closed");
+        assert_eq!(row.status_text(), "Client closed");
+        assert!(row.exit.as_ref().is_some_and(|report|
+            report.exit_status == Some(0) && report.during_startup
+        ));
+    }
+
+    #[test]
+    fn retail_clean_exit_inside_startup_window_remains_a_startup_failure() {
+        let mut app = app();
+        app.preview = false;
+        app.settings.sign_in_after_game = false;
+
+        assert!(app.accounts[0].account.mode == AccountMode::Retail);
+
+        let report = launch_log::classify_loader_end(
+            &launch_log::LoaderEnd::Exit(0),
+            Duration::from_secs(5),
+        );
+
+        game_ends(&mut app, 0, report);
+
+        let row = &app.accounts[0];
+        assert!(row.problem);
+        assert_eq!(row.status, "Game exited during startup with code 0");
+        assert!(row.exit.as_ref().is_some_and(|report|
+            report.exit_status == Some(0) && report.during_startup
+        ));
+    }
+
+    #[test]
     fn closing_a_game_stays_signed_out_by_default_even_with_startup_signin_enabled() {
         let (mut app, key) = resign_app("close-game-stays-out");
         app.settings.sign_in_after_game = false;
