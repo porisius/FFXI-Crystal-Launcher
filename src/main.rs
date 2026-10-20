@@ -5344,14 +5344,12 @@ const STATUS_TEXTS: [&str; 13] = [
     "Finding FINAL FANTASY XI…",
     "No installed FFXI folder was found. Run official setup or use Browse.",
 ];
-const ROW_TEXTS: [&str; 13] = [
+const ROW_TEXTS: [&str; 11] = [
     "Checking whether FINAL FANTASY XI is up…",
     "FFXI is down for maintenance. Starting as soon as it's back…",
     "FFXI's worlds are down. Starting as soon as they're back…",
     "FFXI is back — enter your one-time password to start",
     "Ready to launch",
-    "Private-server client temporarily unavailable",
-    "Private-server client temporarily unavailable; saved account kept.",
     "Signed in to PlayOnline · FFXI is closed",
     "Client started · continue in game",
     "Client closed",

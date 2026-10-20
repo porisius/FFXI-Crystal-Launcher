@@ -198,14 +198,16 @@ impl Settings {
         }
     }
 
-    /// Retail choices fall back to an available launcher. Private-server records
-    /// are retained but cannot launch while the native client is unavailable.
+    /// Retail choices fall back to an available launcher. Private-server accounts
+    /// use Native as a sentinel and launch separately through xiloader.
     pub(crate) fn launch_with_for(&self, account: &Account) -> LaunchWith {
         account.effective_launch_with(self.launch_with)
     }
 
-    /// The retail launch for `account`, or `None` for the unavailable legacy client. The account's own
-    /// boot config and Windower profile win over the defaults set here.
+    /// The retail launch for `account`, or `None` when its effective selection is Native.
+    /// Private-server accounts intentionally have no retail launch plan because they launch
+    /// separately through xiloader. The account's own boot config and Windower profile win
+    /// over the defaults set here.
     pub(crate) fn launch_plan(&self, account: &Account) -> Option<Plan> {
         let tool = match self.launch_with_for(account) {
             LaunchWith::Native => return None,
@@ -686,7 +688,6 @@ mod tests {
         // Legacy retail Native choices use the available default launcher.
         account.launch_with = Some(LaunchWith::Native);
         assert_eq!(settings.launch_plan(&account).unwrap().tool, Tool::Windower);
-        // Private-server profiles stay stored, with no available launch plan.
         let mut private = retail();
         private.mode = crate::backend::AccountMode::Private;
         private.launch_with = Some(LaunchWith::Windower);

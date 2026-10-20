@@ -930,7 +930,6 @@ pub(super) static JA: &[(&str, &str)] = &[
     ("Privacy mode: blur names, IDs and messages for screenshots", "プライバシーモード：スクリーンショット用に名前・ID・メッセージをぼかす"),
     ("Private server", "プライベートサーバー"),
     ("Private server · {server}", "プライベートサーバー · {server}"),
-    //("Private-server client temporarily unavailable", "プライベートサーバー用クライアントは一時的に使用できません"),
     ("Progress appears here while files are checked, updated or downloaded.", "ファイルの確認、アップデート、ダウンロード中はここに進行状況が表示されます。"),
     ("Publish installer file: {error}", "インストーラーのファイルを確定できません：{error}"),
     ("Publish {path}: {error}", "{path}を確定できません：{error}"),
