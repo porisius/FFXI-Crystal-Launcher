@@ -21,8 +21,9 @@ use std::{
     time::Instant,
 };
 
-fn xiloader_command(loader: &Path, game: &Path, account: &Account) -> Command {
+fn xiloader_command(loader: &Path, game: &Path, account: &Account, otp: &str) -> Command {
     let mut command = Command::new(loader);
+
     command
         .current_dir(game)
         .arg("--server")
@@ -30,16 +31,23 @@ fn xiloader_command(loader: &Path, game: &Path, account: &Account) -> Command {
         .arg("--user")
         .arg(&account.pol_id)
         .arg("--password")
-        .arg(&account.pol_password)
-        // Keep parity with the private-server launch profiles this integration
-        // replaces. A later network-policy milestone will decide this dynamically.
-        .arg("--hairpin");
+        .arg(&account.pol_password);
+
+    if !otp.is_empty() {
+        command.arg("--otp").arg(otp);
+    }
+
+    // Keep parity with the private-server launch profiles this integration
+    // replaces. A later network-policy milestone will decide this dynamically.
+    command.arg("--hairpin");
+
     command
 }
 
 pub(crate) fn launch(
     config: &Config,
     account: Account,
+    otp: zeroize::Zeroizing<String>,
     mut timing: Timeline,
     mut progress: impl FnMut(&str),
 ) -> Result<LaunchResult, String> {
@@ -68,11 +76,16 @@ pub(crate) fn launch(
     let log = logs.join(format!("private-{}.log", backend::unique_id()?));
     let mut stdout = File::create(&log)
         .map_err(|e| format!("Could not create the private-server launch log: {e}"))?;
-    writeln!(stdout, "[launcher] Starting private-server client through xiloader.")
+    writeln!(
+        stdout,
+        "[launcher] Starting private-server client through xiloader."
+    )
+    .map_err(|e| format!("Could not write the private-server launch log: {e}"))?;
+    stdout
+        .flush()
         .map_err(|e| format!("Could not write the private-server launch log: {e}"))?;
-    stdout.flush()
-        .map_err(|e| format!("Could not write the private-server launch log: {e}"))?;
-    let stderr = stdout.try_clone()
+    let stderr = stdout
+        .try_clone()
         .map_err(|e| format!("Could not prepare the private-server launch log: {e}"))?;
 
     let alive = Arc::new(AtomicBool::new(false));
@@ -89,14 +102,18 @@ pub(crate) fn launch(
     let _monitor = std::thread::Builder::new()
         .name("private-xiloader-monitor".into())
         .spawn(move || {
-            let Ok((mut child, started)) = child_rx.recv() else { return; };
+            let Ok((mut child, started)) = child_rx.recv() else {
+                return;
+            };
             let end = match child.wait() {
-                Ok(status) => status.code().map(LoaderEnd::Exit).unwrap_or(LoaderEnd::Closed),
+                Ok(status) => status
+                    .code()
+                    .map(LoaderEnd::Exit)
+                    .unwrap_or(LoaderEnd::Closed),
                 Err(_) => LoaderEnd::Closed,
             };
             let report = launch_log::classify_loader_end(&end, started.elapsed());
-            launch_log::append_history(
-                &history, &label, &report.summary, Some(&log_monitor));
+            launch_log::append_history(&history, &label, &report.summary, Some(&log_monitor));
             if let Ok(mut slot) = outcome_monitor.lock() {
                 *slot = Some(report);
             }
@@ -106,7 +123,7 @@ pub(crate) fn launch(
         .map_err(|e| format!("Could not start the private-server monitor: {e}"))?;
 
     progress("Starting private-server client through xiloader…");
-    let mut command = xiloader_command(&loader, &game, &account);
+    let mut command = xiloader_command(&loader, &game, &account, otp.as_str());
     command
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -116,7 +133,8 @@ pub(crate) fn launch(
         command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     }
     let started = Instant::now();
-    let child = command.spawn()
+    let child = command
+        .spawn()
         .map_err(|e| format!("Could not start xiloader.exe: {e}"))?;
     let pid = child.id();
     alive.store(true, Ordering::Release);
@@ -150,7 +168,6 @@ pub(crate) fn launch(
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn xiloader_arguments_are_explicit_and_hairpin_enabled() {
         let account = Account {
@@ -166,20 +183,66 @@ mod tests {
             ashita_boot_ini: None,
             windower_profile: None,
         };
+
         let command = xiloader_command(
             Path::new(r"C:\FFXI\xiloader.exe"),
             Path::new(r"C:\FFXI"),
             &account,
+            "123456",
         );
-        let args: Vec<String> = command.get_args()
+
+        let args: Vec<String> = command
+            .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
+
         let expected: Vec<String> = [
-            "--server", "play.example.test",
-            "--user", "fixture-user",
-            "--password", "fixture-secret",
+            "--server",
+            "play.example.test",
+            "--user",
+            "fixture-user",
+            "--password",
+            "fixture-secret",
+            "--otp",
+            "123456",
             "--hairpin",
-        ].into_iter().map(str::to_owned).collect();
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
         assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn xiloader_omits_otp_when_none_was_entered() {
+        let account = Account {
+            label: "Fixture".into(),
+            mode: backend::AccountMode::Private,
+            server: "play.example.test".into(),
+            pol_id: "fixture-user".into(),
+            pol_password: "fixture-secret".into(),
+            se_id: String::new(),
+            se_password: String::new(),
+            region: 0,
+            launch_with: None,
+            ashita_boot_ini: None,
+            windower_profile: None,
+        };
+
+        let command = xiloader_command(
+            Path::new(r"C:\FFXI\xiloader.exe"),
+            Path::new(r"C:\FFXI"),
+            &account,
+            "",
+        );
+
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(!args.iter().any(|arg| arg == "--otp"));
+        assert!(!args.iter().any(|arg| arg == "123456"));
     }
 }

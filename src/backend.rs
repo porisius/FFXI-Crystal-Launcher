@@ -25,9 +25,12 @@ pub struct Config {
 }
 impl Default for Config {
     fn default() -> Self {
-        let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("Crystal-Launcher.exe"));
-        let user_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir).join("Crystal Launcher");
+        let executable =
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("Crystal-Launcher.exe"));
+        let user_data = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Crystal Launcher");
         let mut config = Self::from_locations(&executable, &user_data);
         if let Some(root) = std::env::var_os("CRYSTAL_DATA_ROOT") {
             config.experiment = PathBuf::from(root);
@@ -39,14 +42,20 @@ impl Config {
     /// Keep existing checkout data in place; packaged copies use this Windows user's data folder.
     fn from_locations(executable: &Path, user_data: &Path) -> Self {
         let executable_dir = executable.parent().unwrap_or_else(|| Path::new("."));
-        let checkout = executable_dir.ancestors()
+        let checkout = executable_dir
+            .ancestors()
             .find(|path| path.join("iced-launcher/Cargo.toml").is_file());
         let package = checkout.unwrap_or(executable_dir);
         let bundled_runtime = package.join("native-runtime");
-        let legacy_runtime = package.parent().unwrap_or(package).join("xi-on-mac-windows");
+        let legacy_runtime = package
+            .parent()
+            .unwrap_or(package)
+            .join("xi-on-mac-windows");
         let repository = if !bundled_runtime.exists() && checkout.is_some() {
             legacy_runtime
-        } else { bundled_runtime };
+        } else {
+            bundled_runtime
+        };
         Self {
             experiment: checkout.unwrap_or(user_data).to_path_buf(),
             repository,
@@ -241,11 +250,17 @@ impl Account {
     pub(crate) fn effective_launch_with(&self, default: LaunchWith) -> LaunchWith {
         match self.mode {
             AccountMode::Private => LaunchWith::Native,
-            AccountMode::Retail => self.launch_with.filter(|tool| *tool != LaunchWith::Native).unwrap_or(default).retail(),
+            AccountMode::Retail => self
+                .launch_with
+                .filter(|tool| *tool != LaunchWith::Native)
+                .unwrap_or(default)
+                .retail(),
         }
     }
     fn has_launch_settings(&self) -> bool {
-        self.launch_with.is_some() || self.ashita_boot_ini.is_some() || self.windower_profile.is_some()
+        self.launch_with.is_some()
+            || self.ashita_boot_ini.is_some()
+            || self.windower_profile.is_some()
     }
 }
 impl Drop for Account {
@@ -270,12 +285,17 @@ fn validate_account(account: &Account) -> Result<(), String> {
     }
     if let Some(name) = &account.ashita_boot_ini {
         if !crate::pol_less::tools::valid_boot_ini_name(name) {
-            return Err(t("The Ashita boot config must be an .ini file name in Ashita's config\\boot folder.").into());
+            return Err(t(
+                "The Ashita boot config must be an .ini file name in Ashita's config\\boot folder.",
+            )
+            .into());
         }
     }
     if let Some(name) = &account.windower_profile {
         if name.is_empty() || !crate::pol_less::tools::valid_profile(name) {
-            return Err(t("The Windower profile name can't contain quotes or control characters.").into());
+            return Err(
+                t("The Windower profile name can't contain quotes or control characters.").into(),
+            );
         }
     }
     match account.mode {
@@ -384,7 +404,11 @@ fn encode_accounts(accounts: &[Account]) -> Result<Zeroizing<Vec<u8>>, String> {
     for account in accounts {
         validate_account(account)?;
         size = size
-            .checked_add(if v2 { ACCOUNT_FIXED_V2 } else { ACCOUNT_FIXED_V1 })
+            .checked_add(if v2 {
+                ACCOUNT_FIXED_V2
+            } else {
+                ACCOUNT_FIXED_V1
+            })
             .ok_or(t("Saved accounts are too large."))?;
         for field in [
             &account.label,
@@ -400,7 +424,9 @@ fn encode_accounts(accounts: &[Account]) -> Result<Zeroizing<Vec<u8>>, String> {
         }
         if v2 {
             for field in launch_fields(account) {
-                size = size.checked_add(field.len()).ok_or(t("Saved accounts are too large."))?;
+                size = size
+                    .checked_add(field.len())
+                    .ok_or(t("Saved accounts are too large."))?;
             }
         }
     }
@@ -471,7 +497,14 @@ fn decode_accounts(mut plaintext: &[u8]) -> Result<Vec<Account>, String> {
         _ => return Err(t("Unsupported saved-account vault format.").into()),
     };
     let count = u32::from_le_bytes(take(&mut plaintext, 4)?.try_into().unwrap()) as usize;
-    if count > plaintext.len() / if v2 { ACCOUNT_FIXED_V2 } else { ACCOUNT_FIXED_V1 } {
+    if count
+        > plaintext.len()
+            / if v2 {
+                ACCOUNT_FIXED_V2
+            } else {
+                ACCOUNT_FIXED_V1
+            }
+    {
         return Err(t("Invalid saved-account count.").into());
     }
     let mut accounts = Vec::new();
@@ -575,7 +608,8 @@ pub fn save_accounts(config: &Config, accounts: &[Account]) -> Result<(), String
     }
     let path = config.vault_path();
     let directory = path.parent().ok_or(t("Invalid saved-account location."))?;
-    fs::create_dir_all(directory).map_err(|_| t("Could not create the saved-account directory."))?;
+    fs::create_dir_all(directory)
+        .map_err(|_| t("Could not create the saved-account directory."))?;
     let temporary = directory.join(format!("accounts-{}.tmp", unique_id()?));
     let result = (|| {
         let mut file = OpenOptions::new()
@@ -707,7 +741,8 @@ fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
 }
 #[cfg(not(windows))]
 fn replace_file(source: &Path, destination: &Path) -> Result<(), String> {
-    fs::rename(source, destination).map_err(|_| t("Could not replace the saved-account vault.").into())
+    fs::rename(source, destination)
+        .map_err(|_| t("Could not replace the saved-account vault.").into())
 }
 
 pub(crate) fn unique_id() -> Result<String, String> {
@@ -736,7 +771,14 @@ pub fn login_with_progress(
 ) -> Result<LaunchResult, String> {
     let label = account.label.clone();
     let history = config.history_path();
-    let result = login_inner(config, account, otp, via, Timeline::begin_at(clicked), progress);
+    let result = login_inner(
+        config,
+        account,
+        otp,
+        via,
+        Timeline::begin_at(clicked),
+        progress,
+    );
     if let Err(error) = &result {
         let (message, log) = crate::launch_log::split_log(error);
         let message: String = message.chars().take(240).collect();
@@ -757,8 +799,7 @@ fn login_inner(
     let otp = Zeroizing::new(otp);
     match account.mode {
         AccountMode::Private => {
-            drop(otp);
-            crate::private_server::launch(config, account, timing, &mut progress)
+            crate::private_server::launch(config, account, otp, timing, &mut progress)
         }
         AccountMode::Retail => {
             let plan = via.ok_or_else(|| t("The native client is temporarily unavailable. Retail accounts must launch through Windower or Ashita; saved private-server accounts are kept.").to_owned())?;
@@ -772,14 +813,18 @@ mod tests {
     use super::*;
     #[test]
     fn packaged_paths_follow_the_executable_and_keep_each_users_vault_separate() {
-        let package = std::env::temp_dir().join(format!("crystal-package-{}", unique_id().unwrap()));
+        let package =
+            std::env::temp_dir().join(format!("crystal-package-{}", unique_id().unwrap()));
         let first_user = package.join("users/one");
         let second_user = package.join("users/two");
         let executable = package.join("portable/Crystal-Launcher.exe");
         let first = Config::from_locations(&executable, &first_user);
         let second = Config::from_locations(&executable, &second_user);
         assert_eq!(first.repository, package.join("portable/native-runtime"));
-        assert!(first.game_install.is_none(), "a packaged launcher detects this PC's install instead of guessing a bundled client");
+        assert!(
+            first.game_install.is_none(),
+            "a packaged launcher detects this PC's install instead of guessing a bundled client"
+        );
         assert_eq!(first.experiment, first_user);
         assert_ne!(first.vault_path(), second.vault_path());
         assert!(first.vault_path().starts_with(&first_user));
@@ -791,7 +836,8 @@ mod tests {
         let root = std::env::temp_dir().join(format!("crystal-reinstall-{}", unique_id().unwrap()));
         let data = root.join("user-data");
         let original = Config::from_locations(&root.join("install/Crystal-Launcher.exe"), &data);
-        let replacement = Config::from_locations(&root.join("reinstalled/Crystal-Launcher.exe"), &data);
+        let replacement =
+            Config::from_locations(&root.join("reinstalled/Crystal-Launcher.exe"), &data);
         save_accounts(&original, &[retail()]).unwrap();
         let before = fs::read(original.vault_path()).unwrap();
         assert_eq!(original.vault_path(), replacement.vault_path());
@@ -814,32 +860,63 @@ mod tests {
         let config = Config::from_locations(&executable, &root.join("user-data"));
         assert_eq!(config.experiment, project);
         assert_eq!(config.repository, root.join("xi-on-mac-windows"));
-        assert_eq!(config.vault_path(), project.join("iced-launcher/accounts.dpapi"));
+        assert_eq!(
+            config.vault_path(),
+            project.join("iced-launcher/accounts.dpapi")
+        );
         fs::create_dir(project.join("native-runtime")).unwrap();
-        assert_eq!(Config::from_locations(&executable, &root.join("user-data")).repository, project.join("native-runtime"));
+        assert_eq!(
+            Config::from_locations(&executable, &root.join("user-data")).repository,
+            project.join("native-runtime")
+        );
     }
 
     #[test]
     fn launch_routes_fail_safely_before_authentication() {
-        let config = Config { experiment: PathBuf::from("missing-fixture"),
-            repository: PathBuf::from("missing-fixture"), game_install: None, dat_overlays: Vec::new() };
-        let private = login_inner(&config, account(), String::new(), None, Timeline::begin(), |_| {})
-            .unwrap_err();
+        let config = Config {
+            experiment: PathBuf::from("missing-fixture"),
+            repository: PathBuf::from("missing-fixture"),
+            game_install: None,
+            dat_overlays: Vec::new(),
+        };
+        let private = login_inner(
+            &config,
+            account(),
+            String::new(),
+            None,
+            Timeline::begin(),
+            |_| {},
+        )
+        .unwrap_err();
         assert!(private.contains("FINAL FANTASY XI folder"));
 
-        let retail = login_inner(&config, retail(), String::new(), None, Timeline::begin(), |_| {})
-            .unwrap_err();
+        let retail = login_inner(
+            &config,
+            retail(),
+            String::new(),
+            None,
+            Timeline::begin(),
+            |_| {},
+        )
+        .unwrap_err();
         assert!(retail.contains("temporarily unavailable"));
     }
 
     #[test]
     fn selected_install_changes_game_path_without_moving_account_storage() {
-        let root = std::env::temp_dir().join(format!("xi-game-path-fixture-{}", unique_id().unwrap()));
+        let root =
+            std::env::temp_dir().join(format!("xi-game-path-fixture-{}", unique_id().unwrap()));
         let game = root.join("Chosen Game With Spaces");
-        let config = Config { experiment: root.clone(), repository: root.clone(),
-            game_install: Some(game.clone()), dat_overlays: Vec::new() };
+        let config = Config {
+            experiment: root.clone(),
+            repository: root.clone(),
+            game_install: Some(game.clone()),
+            dat_overlays: Vec::new(),
+        };
         assert_eq!(config.game_directory(), game);
-        assert!(config.account_directory(&account()).starts_with(root.join("test-launcher/data")));
+        assert!(config
+            .account_directory(&account())
+            .starts_with(root.join("test-launcher/data")));
     }
 
     fn account() -> Account {
@@ -890,11 +967,18 @@ mod tests {
     fn version_one_vaults_load_with_default_launch_settings() {
         let old = version_one_vault(&[
             (1, 0, ["Main", "", "ABCD1234", "polpass", "seid", "sepass"]),
-            (0, 0, ["Private", "play.example.net", "user", "secret", "", ""]),
+            (
+                0,
+                0,
+                ["Private", "play.example.net", "user", "secret", "", ""],
+            ),
         ]);
         let accounts = decode_accounts(&old).unwrap();
         assert_eq!(accounts.len(), 2);
-        assert_eq!((accounts[0].label.as_str(), accounts[0].se_password.as_str()), ("Main", "sepass"));
+        assert_eq!(
+            (accounts[0].label.as_str(), accounts[0].se_password.as_str()),
+            ("Main", "sepass")
+        );
         for account in &accounts {
             assert_eq!(account.launch_with, None);
             assert_eq!(account.ashita_boot_ini, None);
@@ -922,14 +1006,32 @@ mod tests {
         assert_eq!(decoded[0].ashita_boot_ini, None);
         assert_eq!(decoded[1].launch_with, Some(LaunchWith::Ashita));
         assert_eq!(decoded[1].ashita_boot_ini.as_deref(), Some("mule.ini"));
-        assert_eq!((decoded[2].launch_with.clone(), decoded[2].windower_profile.clone()), (None, None));
+        assert_eq!(
+            (
+                decoded[2].launch_with.clone(),
+                decoded[2].windower_profile.clone()
+            ),
+            (None, None)
+        );
         assert_eq!(decoded[2].pol_password, "synthetic secret");
         for end in 0..encoded.len() {
             assert!(decode_accounts(&encoded[..end]).is_err());
         }
         let mut bad_launch = Zeroizing::new(encoded.to_vec());
         // The first account's launch byte follows its six fields.
-        let fixed: usize = 12 + 2 + ["Retail test", "", "ABCD1234", "synthetic", "synthetic", "synthetic"].iter().map(|f| 4 + f.len()).sum::<usize>();
+        let fixed: usize = 12
+            + 2
+            + [
+                "Retail test",
+                "",
+                "ABCD1234",
+                "synthetic",
+                "synthetic",
+                "synthetic",
+            ]
+            .iter()
+            .map(|f| 4 + f.len())
+            .sum::<usize>();
         assert_eq!(bad_launch[fixed], 2);
         bad_launch[fixed] = 9;
         assert!(decode_accounts(&bad_launch).is_err());
@@ -945,36 +1047,61 @@ mod tests {
         value.windower_profile = Some("a\" --executable=evil".into());
         assert!(encode_accounts(&[value.clone()]).is_err());
         value.windower_profile = Some(String::new());
-        assert!(encode_accounts(&[value.clone()]).is_err(), "an empty profile is stored as None");
+        assert!(
+            encode_accounts(&[value.clone()]).is_err(),
+            "an empty profile is stored as None"
+        );
         value.windower_profile = Some("Main".into());
         assert!(encode_accounts(&[value]).is_ok());
     }
 
     #[test]
     fn vanilla_vault_choice_round_trips_without_reassigning_older_choices() {
-        let choices = [None, Some(LaunchWith::Native), Some(LaunchWith::Windower),
-            Some(LaunchWith::Ashita), Some(LaunchWith::Vanilla)];
-        let accounts: Vec<_> = choices.iter().map(|&launch_with| {
-            let mut account = retail(); account.launch_with = launch_with; account
-        }).collect();
+        let choices = [
+            None,
+            Some(LaunchWith::Native),
+            Some(LaunchWith::Windower),
+            Some(LaunchWith::Ashita),
+            Some(LaunchWith::Vanilla),
+        ];
+        let accounts: Vec<_> = choices
+            .iter()
+            .map(|&launch_with| {
+                let mut account = retail();
+                account.launch_with = launch_with;
+                account
+            })
+            .collect();
         for (code, &choice) in choices.iter().enumerate() {
             assert_eq!(launch_with_code(choice), code as u8);
             assert_eq!(launch_with_from_code(code as u8).unwrap(), choice);
         }
         let encoded = encode_accounts(&accounts).unwrap();
         let decoded = decode_accounts(&encoded).unwrap();
-        assert_eq!(decoded.iter().map(|a| a.launch_with).collect::<Vec<_>>(), choices);
+        assert_eq!(
+            decoded.iter().map(|a| a.launch_with).collect::<Vec<_>>(),
+            choices
+        );
     }
     #[test]
     fn effective_launcher_follows_the_account_then_the_default() {
         let mut value = retail();
-        assert_eq!(value.effective_launch_with(LaunchWith::Windower), LaunchWith::Windower);
+        assert_eq!(
+            value.effective_launch_with(LaunchWith::Windower),
+            LaunchWith::Windower
+        );
         value.launch_with = Some(LaunchWith::Ashita);
-        assert_eq!(value.effective_launch_with(LaunchWith::Windower), LaunchWith::Ashita);
+        assert_eq!(
+            value.effective_launch_with(LaunchWith::Windower),
+            LaunchWith::Ashita
+        );
         // Private servers always use the native client.
         let mut private = account();
         private.launch_with = Some(LaunchWith::Ashita);
-        assert_eq!(private.effective_launch_with(LaunchWith::Windower), LaunchWith::Native);
+        assert_eq!(
+            private.effective_launch_with(LaunchWith::Windower),
+            LaunchWith::Native
+        );
     }
     #[test]
     fn imported_account_directory_survives_hostname_case_edit() {
@@ -1012,11 +1139,20 @@ mod tests {
             plain(r"\\?\C:\Games\SquareEnix\FINAL FANTASY XI"),
             PathBuf::from(r"C:\Games\SquareEnix\FINAL FANTASY XI")
         );
-        assert_eq!(plain(r"\\?\UNC\nas\games\FFXI"), PathBuf::from(r"\\nas\games\FFXI"));
+        assert_eq!(
+            plain(r"\\?\UNC\nas\games\FFXI"),
+            PathBuf::from(r"\\nas\games\FFXI")
+        );
         assert_eq!(plain(r"C:\Games\FFXI"), PathBuf::from(r"C:\Games\FFXI"));
         // only valid in verbatim form: kept as is
-        assert_eq!(plain(r"\\?\C:\odd.\FFXI"), PathBuf::from(r"\\?\C:\odd.\FFXI"));
-        assert_eq!(plain(r"\\?\Volume{0}\FFXI"), PathBuf::from(r"\\?\Volume{0}\FFXI"));
+        assert_eq!(
+            plain(r"\\?\C:\odd.\FFXI"),
+            PathBuf::from(r"\\?\C:\odd.\FFXI")
+        );
+        assert_eq!(
+            plain(r"\\?\Volume{0}\FFXI"),
+            PathBuf::from(r"\\?\Volume{0}\FFXI")
+        );
         let long = format!(r"\\?\C:\{}", "a".repeat(300));
         assert_eq!(plain(&long), PathBuf::from(&long));
     }
