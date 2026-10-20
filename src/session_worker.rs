@@ -2863,7 +2863,9 @@ mod tests {
         let fixture = Fixture::new();
         fs::write(fixture.0.join("social-fixture"), []).unwrap();
         let config = config(&fixture.0);
-        let account = account();
+        let mut account = account();
+        account.mode = backend::AccountMode::Retail;
+        account.server.clear();
         let launch = launch_command(child_command("session_worker::tests::worker_fixture", &fixture.0), &config, account.clone(), "123456".into(), None, Instant::now(), |_| {}).unwrap();
         assert!(!launch.game_running.load(Ordering::Acquire));
         assert!(launch.alive.load(Ordering::Acquire));
@@ -3077,7 +3079,9 @@ mod tests {
         let fixture = Fixture::new();
         fs::write(fixture.0.join("social-fixture"), []).unwrap();
         let config = config(&fixture.0);
-        let account = account();
+        let mut account = account();
+        account.mode = backend::AccountMode::Retail;
+        account.server.clear();
         let launch = launch_command(child_command("session_worker::tests::worker_fixture", &fixture.0),
             &config, account.clone(), String::new(), None, Instant::now(), |_| {}).unwrap();
         let mut app = crate::tests::app();

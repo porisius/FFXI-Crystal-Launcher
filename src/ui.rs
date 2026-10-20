@@ -652,8 +652,8 @@ impl std::fmt::Display for Profile {
         f.write_str(&self.label)
     }
 }
-/// The game front end the launch profile starts. Native is retained only to read
-/// older settings and account vaults; it is not an available launch route.
+/// The game front end the launch profile starts. Native remains the serialized
+/// private-server route and is implemented by xiloader; retail maps legacy Native to default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum LaunchWith {
     Native,
@@ -664,6 +664,7 @@ pub(crate) enum LaunchWith {
 }
 impl LaunchWith {
     pub(crate) const ALL: [LaunchWith; 3] = [LaunchWith::Vanilla, LaunchWith::Windower, LaunchWith::Ashita];
+    pub(crate) const PRIVATE: [LaunchWith; 1] = [LaunchWith::Native];
 
     pub(crate) fn retail(self) -> Self {
         if self == Self::Native { Self::default() } else { self }
@@ -672,7 +673,7 @@ impl LaunchWith {
 impl std::fmt::Display for LaunchWith {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            LaunchWith::Native => t("Unavailable client"),
+            LaunchWith::Native => "xiloader",
             LaunchWith::Windower => "Windower",
             LaunchWith::Ashita => "Ashita",
             LaunchWith::Vanilla => t("Vanilla"),
@@ -1255,17 +1256,16 @@ fn profile_panel(app: &App) -> Element<'_, Message> {
             .menu_style(profile_menu_style(light));
         stack![profile_tall(picker, block_height), face].into()
     };
-    // Private-server profiles remain saved, but their client is unavailable.
+    // Private-server profiles have one fixed route: xiloader.
     let field_height = 40.0 * s;
     let shown = profile(app);
     let launchers: &'static [LaunchWith] = match shown {
-        Some(row) if row.account.mode == AccountMode::Private => &[],
+        Some(row) if row.account.mode == AccountMode::Private => &LaunchWith::PRIVATE,
         _ => &LaunchWith::ALL,
     };
     let launcher = crate::controller_nav::pick_list(
         launchers,
-        shown.filter(|row| row.account.mode == AccountMode::Retail)
-            .map(|row| app.launcher_for(&row.account))
+        shown.map(|row| app.launcher_for(&row.account))
             .or_else(|| shown.is_none().then_some(app.settings.launch_with.retail())),
         Message::SetLaunchWith,
     )
@@ -3839,6 +3839,28 @@ fn account_editor<'a>(
         },
         Some(Message::CloseEditor),
     );
+    let account_type: Element<'a, Message> = if editing {
+        column![
+            form_label(t("Account type")),
+            sub_text(if retail { t("Retail") } else { t("Private server") }, 13.0)
+        ]
+        .spacing(8)
+        .into()
+    } else {
+        let modes: Vec<_> = [
+            (AccountMode::Retail, "Retail"),
+            (AccountMode::Private, "Private server"),
+        ]
+        .into_iter()
+        .map(|(mode, label)| segment(t(label), account.mode == mode, Message::EditorMode(mode)))
+        .collect();
+        column![
+            form_label(t("Account type")),
+            container(segmented(modes)).width(264)
+        ]
+        .spacing(8)
+        .into()
+    };
     let mut form = column![
         field(
             t("Account name"),
@@ -3848,11 +3870,7 @@ fn account_editor<'a>(
             // Privacy mode masks identifying fields like passwords.
             crate::privacy::on(), true
         ),
-        column![
-            form_label(t("Account type")),
-            sub_text(if retail { t("Retail") } else { t("Private server · client temporarily unavailable. This saved account is kept.") }, 13.0)
-        ]
-        .spacing(8)
+        account_type
     ]
     .spacing(20);
     if !retail {
@@ -3904,20 +3922,19 @@ fn account_editor<'a>(
             .spacing(16),
         );
     }
-    let regions = [(0u8, "US"), (1, "EU"), (2, "JP")]
-        .into_iter()
-        .map(|(value, label)| segment(label, account.region == value, Message::EditorRegion(value)))
-        .collect();
-    form = form.push(
-        column![
-            form_label(t("Region")),
-            container(segmented(regions)).width(264),
-            sub_text(t("Retail launch is currently verified with the US configuration."), 12.0)
-        ]
-        .spacing(8),
-    );
-    // Only retail accounts have an available launch route.
     if retail {
+        let regions = [(0u8, "US"), (1, "EU"), (2, "JP")]
+            .into_iter()
+            .map(|(value, label)| segment(label, account.region == value, Message::EditorRegion(value)))
+            .collect();
+        form = form.push(
+            column![
+                form_label(t("Region")),
+                container(segmented(regions)).width(264),
+                sub_text(t("Retail launch is currently verified with the US configuration."), 12.0)
+            ]
+            .spacing(8),
+        );
         form = form.push(launch_section(app, account, c));
     }
     if active {

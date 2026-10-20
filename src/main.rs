@@ -26,6 +26,7 @@ mod settings_page;
 mod operation;
 mod patch;
 mod play_flag;
+mod private_server;
 mod pol_less;
 mod privacy;
 mod services;
@@ -610,6 +611,7 @@ pub(crate) enum Message {
     NewAccount,
     EditAccount(String),
     EditorChanged(Field, String),
+    EditorMode(AccountMode),
     EditorRegion(u8),
     // the editor's Launch section (None = use the default).
     EditorLaunchWith(Option<ui::LaunchWith>),
@@ -1178,7 +1180,7 @@ impl App {
         let mut seen = BTreeSet::new();
         self.accounts
             .iter()
-            .filter(|r| r.account.mode == AccountMode::Retail && r.can_play() && (!selected_only || r.selected))
+            .filter(|r| r.can_play() && (!selected_only || r.selected))
             .filter_map(|r| seen.insert(r.key.clone()).then(|| r.key.clone()))
             .collect()
     }
@@ -1277,10 +1279,14 @@ impl App {
 
     pub fn main_action(&self) -> MainAction {
         if self.maintenance.is_some() || self.reshade.busy || matches!(self.self_update, self_update::State::Applying) { return MainAction::Working; }
-        if self.viewer.as_ref().is_some_and(viewer::Status::requires_update)
-            || self.patch.as_ref().is_some_and(|report| report.state == patch::PatchState::Required) {
+        let private_only = self.accounts.iter().any(|row| row.selected)
+            && self.accounts.iter().filter(|row| row.selected)
+                .all(|row| row.account.mode == AccountMode::Private);
+        if !private_only && (self.viewer.as_ref().is_some_and(viewer::Status::requires_update)
+            || self.patch.as_ref().is_some_and(|report| report.state == patch::PatchState::Required)) {
             return MainAction::Update;
         }
+        if private_only { return MainAction::Play; }
         match self.service_availability() {
             services::Availability::Maintenance => MainAction::Maintenance,
             services::Availability::Outage => MainAction::Offline,
@@ -1712,7 +1718,7 @@ impl App {
                         .as_ref()
                         .map_or(true, |s| s.contains(&key)),
                     key,
-                    status: if account.mode == AccountMode::Retail { t("Ready to launch") } else { t("Private-server client temporarily unavailable") }.into(),
+                    status: t("Ready to launch").into(),
                     account,
                     otp: String::new(),
                     busy: false,
@@ -1951,7 +1957,9 @@ impl App {
     fn start_launch(&mut self, keys: Vec<String>, social_only: bool, clicked: Instant, trigger: Option<launch_timing::LaunchTrigger>) {
         // A new Play replaces a refused one an Update would have started again.
         if !social_only { self.refused_plays.retain(|(key, _)| !keys.contains(key)); }
-        if !social_only && self.hold_for_status(&keys, clicked, trigger) { return; }
+        let retail_requested = keys.iter().any(|key|
+            self.accounts.iter().any(|row| row.key == *key && row.account.mode == AccountMode::Retail));
+        if !social_only && retail_requested && self.hold_for_status(&keys, clicked, trigger) { return; }
         self.start_launch_now(keys, social_only, clicked, trigger);
     }
 
@@ -2320,9 +2328,12 @@ impl App {
 
     fn start_launch_now(&mut self, keys: Vec<String>, social_only: bool, clicked: Instant, trigger: Option<launch_timing::LaunchTrigger>) {
         use launch_timing::LaunchTrigger;
+        let retail_requested = keys.iter().any(|key|
+            self.accounts.iter().any(|row| row.key == *key && row.account.mode == AccountMode::Retail));
         // A Play the downtime gate below sets waiting is not recorded: it waits, as it would.
         #[cfg(test)]
-        if self.launches.is_some() && !self.windower_editor_open && (social_only || self.preview || !self.service_down()) {
+        if self.launches.is_some() && !self.windower_editor_open
+            && (social_only || self.preview || !retail_requested || !self.service_down()) {
             if let Some(launches) = &mut self.launches { launches.push((keys, social_only, clicked, trigger)); }
             return;
         }
@@ -2337,7 +2348,7 @@ impl App {
         if self.preview || !self.vault_ready || self.vault_saving {
             return;
         }
-        if !social_only && self.service_down() {
+        if !social_only && retail_requested && self.service_down() {
             self.wait_for_service(&keys);
             return;
         }
@@ -2346,7 +2357,9 @@ impl App {
         if !social_only { self.unwait(&keys); }
         // An interrupted update in a folder this launch uses is finished (or undone) first,
         // instead of refusing the launch; the launch then goes on by itself.
-        let interrupted = self.interrupted_updates(&keys, social_only);
+        let interrupted = if retail_requested {
+            self.interrupted_updates(&keys, social_only)
+        } else { Vec::new() };
         if !interrupted.is_empty() {
             self.finish_interrupted_updates(interrupted, HeldLaunch { keys, social_only, clicked, trigger }, false);
             return;
@@ -2411,8 +2424,51 @@ impl App {
                 continue;
             }
             let account = row.account.clone();
-            if account.mode != AccountMode::Retail {
-                row.status = t("Private-server client temporarily unavailable; saved account kept.").into();
+            if account.mode == AccountMode::Private {
+                // Private accounts have no PlayOnline-only/social session. Their Play path
+                // uses the same detached Crystal session worker, but that worker dispatches
+                // to xiloader instead of polcore/crystal-loader.
+                if social_only { continue; }
+                let config = self.settings.config_for(&self.config, &account);
+                row.launch_generation = row.launch_generation.wrapping_add(1);
+                let generation = row.launch_generation;
+                row.signed_out = false;
+                row.launch_trigger = None;
+                row.network_wait = None;
+                row.busy = true;
+                row.preparing_session = false;
+                row.problem = false;
+                row.exit = None;
+                row.timing.clear();
+                row.play_timing = None;
+                row.status = "Starting private-server client through xiloader…".into();
+                let sender = self.sender.clone();
+                let worker_key = key.clone();
+                if !tools.contains(&"xiloader") { tools.push("xiloader"); }
+                all_native = false;
+                let result = std::thread::Builder::new()
+                    .name("xi-private-login".into())
+                    .spawn(move || {
+                        let progress_sender = sender.clone();
+                        let progress_key = worker_key.clone();
+                        let mut progress = move |s: &str| {
+                            let _ = progress_sender.send(
+                                WorkerEvent::Progress(progress_key.clone(), s.to_owned())
+                                    .for_launch(&progress_key, generation)
+                            );
+                        };
+                        let result = session_worker::launch(
+                            &config, account, String::new(), None, clicked, &mut progress);
+                        let _ = sender.send(
+                            WorkerEvent::Complete(worker_key.clone(), result)
+                                .for_launch(&worker_key, generation)
+                        );
+                    });
+                if result.is_err() {
+                    row.busy = false;
+                    row.problem = true;
+                    row.status = "Could not start the private-server launch worker.".into();
+                }
                 continue;
             }
             // Signing in again must never turn an existing Friends session into a game launch.
@@ -3848,12 +3904,34 @@ impl App {
                             .outcome
                             .take()
                             .and_then(|slot| slot.lock().ok().and_then(|mut r| r.take()));
-                        if row.game_seen && !self.settings.sign_in_after_game { row.signed_out = true; }
-                        if std::mem::take(&mut row.game_seen) && !std::mem::take(&mut row.resign_declined) {
-                            game_ends.push((row.key.clone(), report.as_ref().map(|r| r.kind.clone()), host));
+                        if row.game_seen && !self.settings.sign_in_after_game {
+                            row.signed_out = true;
                         }
+
+                        let game_was_seen = std::mem::take(&mut row.game_seen);
+
+                        if game_was_seen && !std::mem::take(&mut row.resign_declined) {
+                            game_ends.push((
+                                row.key.clone(),
+                                report.as_ref().map(|r| r.kind.clone()),
+                                host,
+                            ));
+                        }
+
                         row.resign_declined = false;
+
                         match report {
+                            Some(report)
+                                if row.account.mode == AccountMode::Private
+                                    && game_was_seen
+                                    && report.exit_status == Some(0) =>
+                            {
+                                // xiloader returned a clean exit after the launcher had already
+                                // observed FFXI running. Do not present this as a startup failure.
+                                row.problem = false;
+                                row.status = t("Client closed").into();
+                                row.exit = Some(report);
+                            }
                             Some(report) => row.set_exit(report),
                             None => {
                                 row.problem = false;
@@ -4058,6 +4136,17 @@ impl App {
                         };
                         destination.zeroize();
                         *destination = value;
+                    }
+                }
+            }
+            Message::EditorMode(mode) => {
+                if !self.vault_saving {
+                    if let Some(editor) = &mut self.editor {
+                        // Account type is chosen only while creating a new account.
+                        // Existing account identity remains stable when editing.
+                        if editor.key.is_none() {
+                            editor.account.mode = mode;
+                        }
                     }
                 }
             }
@@ -7124,17 +7213,48 @@ mod tests {
     }
 
     #[test]
-    fn disabled_private_client_cannot_launch_and_keeps_the_saved_profile() {
+    fn private_client_is_launchable_and_keeps_the_saved_profile() {
         let mut app = app();
         app.preview = false;
         app.accounts[0].account.mode = AccountMode::Private;
         let key = app.accounts[0].key.clone();
-        assert!(!app.launch_keys(false).contains(&key));
-        app.start(vec![key.clone()]);
-        assert!(!app.accounts[0].busy);
-        assert!(app.accounts[0].status.contains("temporarily unavailable"));
+        assert!(app.launch_keys(false).contains(&key));
+        assert_eq!(app.settings.launch_with_for(&app.accounts[0].account), ui::LaunchWith::Native);
         assert_eq!(app.accounts[0].key, key);
         assert_eq!(app.accounts.len(), 3);
+    }
+
+    #[test]
+    fn new_private_account_row_is_ready_to_launch() {
+        let mut app = app();
+        app.preview = false;
+
+        let mut account = app.accounts[0].account.clone();
+        account.mode = AccountMode::Private;
+
+        // Force replace_accounts() to construct a new AccountRow rather than
+        // reusing the existing row.
+        app.accounts.clear();
+        app.replace_accounts(vec![account]);
+
+        assert_eq!(app.accounts.len(), 1);
+        assert!(app.accounts[0].account.mode == AccountMode::Private);
+        assert_eq!(app.accounts[0].status, "Ready to launch");
+        assert!(app.launch_keys(false).contains(&app.accounts[0].key));
+    }
+
+    #[test]
+    fn new_account_can_choose_private_server_mode() {
+        let mut app = app();
+        app.preview = false;
+        app.vault_ready = true;
+        app.vault_saving = false;
+        let _ = app.update(Message::NewAccount);
+        assert!(app.editor.as_ref().is_some_and(|editor| editor.account.mode == AccountMode::Retail));
+        let _ = app.update(Message::EditorMode(AccountMode::Private));
+        assert!(app.editor.as_ref().is_some_and(|editor| editor.account.mode == AccountMode::Private));
+        let _ = app.update(Message::EditorMode(AccountMode::Retail));
+        assert!(app.editor.as_ref().is_some_and(|editor| editor.account.mode == AccountMode::Retail));
     }
 
     #[test]
@@ -8751,12 +8871,15 @@ mod tests {
         let mut app = app();
         app.preview = false;
         let (key, other) = (app.accounts[0].key.clone(), app.accounts[1].key.clone());
-        // Private-server rows: their Plays stop at the row note, with no worker to start.
+        // Private-server rows are valid launch targets now. Make the first temporarily
+        // non-launchable so this test remains only about the wait bookkeeping.
         app.accounts[0].account.mode = AccountMode::Private;
         app.accounts[1].account.mode = AccountMode::Private;
+        app.accounts[0].signing_out = true;
         app.waiting_plays.push(WaitingPlay { keys: vec![key.clone(), other.clone()], otp: Vec::new(), armed: Instant::now(), codes: Vec::new() });
         assert!(!app.service_down());
         app.start_launch_now(vec![key.clone()], false, Instant::now(), None);
+        app.accounts[0].signing_out = false;
         assert!(!app.is_waiting(&key) && app.is_waiting(&other));
         assert!(app.receiver.try_recv().is_err());
         // A sign-in only replaces nothing.

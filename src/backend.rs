@@ -725,8 +725,7 @@ pub(crate) fn unique_id() -> Result<String, String> {
 
 /// Sign in and start the client. Every launch that ends in an error is also written to the
 /// launch history; launches that start are recorded by their supervisor when the client exits.
-/// Retail accounts require an Ashita or Windower plan. Saved private-server
-/// accounts remain readable while their launch route is unavailable.
+/// Retail accounts use Crystal's polcore path; private-server accounts use xiloader.
 pub fn login_with_progress(
     config: &Config,
     account: Account,
@@ -754,11 +753,18 @@ fn login_inner(
     timing: Timeline,
     mut progress: impl FnMut(&str),
 ) -> Result<LaunchResult, String> {
-    let otp = Zeroizing::new(otp);
-    let plan = via.filter(|_| account.mode == AccountMode::Retail)
-        .ok_or_else(|| t("The native client is temporarily unavailable. Retail accounts must launch through Windower or Ashita; saved private-server accounts are kept.").to_owned())?;
     validate_account(&account)?;
-    crate::pol_less::launch(config, &plan, account, otp, timing, &mut progress)
+    let otp = Zeroizing::new(otp);
+    match account.mode {
+        AccountMode::Private => {
+            drop(otp);
+            crate::private_server::launch(config, account, timing, &mut progress)
+        }
+        AccountMode::Retail => {
+            let plan = via.ok_or_else(|| t("The native client is temporarily unavailable. Retail accounts must launch through Windower or Ashita; saved private-server accounts are kept.").to_owned())?;
+            crate::pol_less::launch(config, &plan, account, otp, timing, &mut progress)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -814,14 +820,16 @@ mod tests {
     }
 
     #[test]
-    fn disabled_launch_routes_stop_before_local_preflight_or_authentication() {
+    fn launch_routes_fail_safely_before_authentication() {
         let config = Config { experiment: PathBuf::from("missing-fixture"),
             repository: PathBuf::from("missing-fixture"), game_install: None, dat_overlays: Vec::new() };
-        for value in [account(), retail()] {
-            let error = login_inner(&config, value, String::new(), None, Timeline::begin(), |_| {})
-                .unwrap_err();
-            assert!(error.contains("temporarily unavailable"));
-        }
+        let private = login_inner(&config, account(), String::new(), None, Timeline::begin(), |_| {})
+            .unwrap_err();
+        assert!(private.contains("FINAL FANTASY XI folder"));
+
+        let retail = login_inner(&config, retail(), String::new(), None, Timeline::begin(), |_| {})
+            .unwrap_err();
+        assert!(retail.contains("temporarily unavailable"));
     }
 
     #[test]
