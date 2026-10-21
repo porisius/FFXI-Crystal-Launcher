@@ -652,8 +652,27 @@ pub(crate) enum Injector {
     Fake(Arc<AtomicBool>),
 }
 impl Injector {
+    pub(crate) fn pid(&self) -> Option<u32> {
+        match self {
+            Injector::Child(child) => Some(child.id()),
+            #[cfg(windows)]
+            Injector::Elevated(handle) => {
+                use std::os::windows::io::AsRawHandle;
+                let pid = unsafe {
+                    windows_sys::Win32::System::Threading::GetProcessId(
+                        handle.as_raw_handle() as _
+                    )
+                };
+                (pid != 0).then_some(pid)
+            }
+            Injector::Detached => None,
+            #[cfg(test)]
+            Injector::Fake(_) => None,
+        }
+    }
+
     /// `Some(code)` once the process has exited.
-    fn exited(&mut self) -> Option<Option<i32>> {
+    pub(crate) fn exited(&mut self) -> Option<Option<i32>> {
         match self {
             Injector::Child(child) => child.try_wait().ok().flatten().map(|s| s.code()),
             #[cfg(windows)]
@@ -677,7 +696,7 @@ impl Injector {
         }
     }
     /// Stop our own child if it is still running (a stuck Ashita-cli or Windower).
-    fn stop(&mut self) {
+    pub(crate) fn stop(&mut self) {
         if let Injector::Child(child) = self {
             if matches!(child.try_wait(), Ok(None)) {
                 let _ = child.kill();
@@ -689,7 +708,7 @@ impl Injector {
         if let Injector::Fake(exited) = self { exited.store(true, Ordering::SeqCst); }
     }
 
-    fn wait(&mut self) -> std::io::Result<()> {
+    pub(crate) fn wait(&mut self) -> std::io::Result<()> {
         match self {
             Injector::Child(child) => child.wait().map(|_| ()),
             #[cfg(windows)]
@@ -765,7 +784,7 @@ fn spawn_injector(p: &Prepared, pipe: &str, log: &mut SessionLog) -> Result<Inje
                 #[cfg(windows)]
                 Err(e) if e.raw_os_error() == Some(740) => {
                     log.line("Ashita-cli needs administrator rights; asking Windows.");
-                    run_elevated(&exe, &p.ini_name, &p.tool_dir).map(Injector::Elevated)
+                    run_elevated(&command, &exe, &p.tool_dir, t("The Windows administrator prompt for Ashita was declined. Ashita needs administrator rights: accept the prompt, or run the launcher as administrator."),).map(Injector::Elevated)
                 }
                 Err(e) => Err(tf("Could not start {exe}: {error}", &[("exe", &exe.display()), ("error", &e)])),
             }
@@ -780,9 +799,73 @@ fn spawn_injector(p: &Prepared, pipe: &str, log: &mut SessionLog) -> Result<Inje
     }
 }
 
+#[cfg(windows)]
+fn quote_windows_arg(arg: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let units: Vec<u16> = arg.encode_wide().collect();
+    let needs_quotes = units.is_empty()
+        || units
+            .iter()
+            .any(|&unit| matches!(unit, 0x20 | 0x09 | 0x22));
+
+    if !needs_quotes {
+        return units;
+    }
+
+    let mut output = Vec::new();
+    output.push(b'"' as u16);
+
+    let mut backslashes = 0usize;
+
+    for unit in units {
+        if unit == b'\\' as u16 {
+            backslashes += 1;
+            continue;
+        }
+
+        if unit == b'"' as u16 {
+            for _ in 0..(backslashes * 2 + 1) {
+                output.push(b'\\' as u16);
+            }
+        } else {
+            for _ in 0..backslashes {
+                output.push(b'\\' as u16);
+            }
+        }
+
+        output.push(unit);
+        backslashes = 0;
+    }
+
+    for _ in 0..(backslashes * 2) {
+        output.push(b'\\' as u16);
+    }
+
+    output.push(b'"' as u16);
+    output
+}
+
+#[cfg(windows)]
+fn elevated_parameters(command: &std::process::Command) -> Vec<u16> {
+    let mut parameters = Vec::new();
+
+    for (index, argument) in command.get_args().enumerate() {
+        if index != 0 {
+            parameters.push(b' ' as u16);
+        }
+
+        parameters.extend(quote_windows_arg(argument));
+    }
+
+    // ShellExecuteExW expects a null-terminated string.
+    parameters.push(0);
+    parameters
+}
+
 /// ShellExecuteEx "runas": the UAC prompt, for a launcher that isn't elevated.
 #[cfg(windows)]
-fn run_elevated(exe: &Path, argument: &str, directory: &Path) -> Result<std::os::windows::io::OwnedHandle, String> {
+pub(crate) fn run_elevated(command: &std::process::Command, exe: &Path, directory: &Path, declined: &str, ) -> Result<std::os::windows::io::OwnedHandle, String> {
     use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
     use windows_sys::Win32::{
         Foundation::{GetLastError, ERROR_CANCELLED},
@@ -794,7 +877,7 @@ fn run_elevated(exe: &Path, argument: &str, directory: &Path) -> Result<std::os:
     let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
     let verb = wide("runas".as_ref());
     let file = wide(exe.as_os_str());
-    let parameters = wide(argument.as_ref());
+    let parameters = elevated_parameters(command);
     let dir = wide(directory.as_os_str());
     let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
     info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
@@ -806,7 +889,7 @@ fn run_elevated(exe: &Path, argument: &str, directory: &Path) -> Result<std::os:
     info.nShow = SW_HIDE;
     if unsafe { ShellExecuteExW(&mut info) } == 0 {
         return Err(if unsafe { GetLastError() } == ERROR_CANCELLED {
-            t("The Windows administrator prompt for Ashita was declined. Ashita needs administrator rights: accept the prompt, or run the launcher as administrator.").into()
+            declined.to_owned()
         } else {
             tf("Windows could not start {exe} as administrator.", &[("exe", &exe.display())])
         });

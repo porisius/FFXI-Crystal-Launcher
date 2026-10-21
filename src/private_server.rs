@@ -13,7 +13,7 @@ use std::{
     fs::{self, File},
     io::Write,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -91,7 +91,7 @@ pub(crate) fn launch(
     let alive = Arc::new(AtomicBool::new(false));
     let game_running = Arc::new(AtomicBool::new(false));
     let outcome = Arc::new(Mutex::new(None));
-    let (child_tx, child_rx) = mpsc::sync_channel::<(Child, Instant)>(1);
+    let (child_tx, child_rx) = mpsc::sync_channel::<(crate::pol_less::Injector, Instant)>(1);
 
     let alive_monitor = alive.clone();
     let game_monitor = game_running.clone();
@@ -105,12 +105,13 @@ pub(crate) fn launch(
             let Ok((mut child, started)) = child_rx.recv() else {
                 return;
             };
-            let end = match child.wait() {
-                Ok(status) => status
-                    .code()
-                    .map(LoaderEnd::Exit)
-                    .unwrap_or(LoaderEnd::Closed),
-                Err(_) => LoaderEnd::Closed,
+            let end = if child.wait().is_ok() {
+                match child.exited() {
+                    Some(Some(code)) => LoaderEnd::Exit(code),
+                    _ => LoaderEnd::Closed,
+                }
+            } else {
+                LoaderEnd::Closed
             };
             let report = launch_log::classify_loader_end(&end, started.elapsed());
             launch_log::append_history(&history, &label, &report.summary, Some(&log_monitor));
@@ -133,16 +134,34 @@ pub(crate) fn launch(
         command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     }
     let started = Instant::now();
+
+    #[cfg(windows)]
+    let child = {
+        progress("Requesting administrator rights for xiloader…");
+
+        crate::pol_less::run_elevated(
+            &command,
+            &loader,
+            &game,
+            "The Windows administrator prompt for xiloader was declined.",
+        )
+        .map(crate::pol_less::Injector::Elevated)?
+    };
+
+    #[cfg(not(windows))]
     let child = command
         .spawn()
+        .map(crate::pol_less::Injector::Child)
         .map_err(|e| format!("Could not start xiloader.exe: {e}"))?;
-    let pid = child.id();
+
+    let pid = child
+        .pid()
+        .ok_or_else(|| "Could not determine the xiloader.exe process ID.".to_owned())?;
     alive.store(true, Ordering::Release);
     game_running.store(true, Ordering::Release);
     if let Err(error) = child_tx.send((child, started)) {
         let (mut child, _) = error.0;
-        let _ = child.kill();
-        let _ = child.wait();
+        child.stop();
         alive.store(false, Ordering::Release);
         game_running.store(false, Ordering::Release);
         return Err("Could not attach the private-server process monitor.".into());
