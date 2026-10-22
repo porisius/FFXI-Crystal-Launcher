@@ -641,7 +641,7 @@ impl SessionLog {
 /// The Ashita-cli or Windower process, watched until the loader connects.
 pub(crate) enum Injector {
     Child(std::process::Child),
-    /// Started through the UAC prompt; only waitable.
+    /// Started through the UAC prompt; retained by its process handle.
     #[cfg(windows)]
     Elevated(std::os::windows::io::OwnedHandle),
     /// No process to watch (tests).
@@ -695,17 +695,44 @@ impl Injector {
             Injector::Fake(exited) => exited.load(Ordering::SeqCst).then_some(Some(0)),
         }
     }
-    /// Stop our own child if it is still running (a stuck Ashita-cli or Windower).
+    /// Stop our injector process if it is still running.
     pub(crate) fn stop(&mut self) {
-        if let Injector::Child(child) = self {
-            if matches!(child.try_wait(), Ok(None)) {
-                let _ = child.kill();
-                let _ = child.wait();
+        match self {
+            Injector::Child(child) => {
+                if matches!(child.try_wait(), Ok(None)) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+
+            #[cfg(windows)]
+            Injector::Elevated(handle) => {
+                use std::os::windows::io::AsRawHandle;
+                use windows_sys::Win32::{
+                    Foundation::WAIT_TIMEOUT,
+                    System::Threading::{
+                        TerminateProcess, WaitForSingleObject, INFINITE,
+                    },
+                };
+
+                let handle = handle.as_raw_handle() as _;
+
+                unsafe {
+                    if WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+                        && TerminateProcess(handle, 1) != 0
+                    {
+                        let _ = WaitForSingleObject(handle, INFINITE);
+                    }
+                }
+            }
+
+            Injector::Detached => {}
+
+            #[cfg(test)]
+            Injector::Fake(exited) => {
+                exited.store(true, Ordering::SeqCst);
             }
         }
-        // A stand-in "exits" when stopped, so tests see the stop and its order.
-        #[cfg(test)]
-        if let Injector::Fake(exited) = self { exited.store(true, Ordering::SeqCst); }
     }
 
     pub(crate) fn wait(&mut self) -> std::io::Result<()> {
