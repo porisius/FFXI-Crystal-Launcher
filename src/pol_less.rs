@@ -3586,6 +3586,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unsupported_park_spawn_is_preserved_for_silent_background_failure() {
+        let (prepared, dir) = fixture(Tool::Windower);
+
+        let mut spawn =
+            |_: &Prepared, _: &str, _: &mut SessionLog| -> Result<Injector, String> {
+                Err(park::UNSUPPORTED.into())
+            };
+
+        let error = park::park_prepared(
+            prepared,
+            "",
+            AutoLogin::default(),
+            Timeline::begin(),
+            &mut |_| {},
+            &mut spawn,
+            test_turns(),
+            FAST,
+            Duration::from_secs(5),
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(error, park::UNSUPPORTED);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     /// 07d §1.6: a hello without `park` is closed as unsupported before any line; a loader
     /// that never parks, or ends while parking, fails the park; one that ends while parked is
     /// seen by `watch`.
