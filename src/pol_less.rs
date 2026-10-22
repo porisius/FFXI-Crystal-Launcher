@@ -953,6 +953,82 @@ fn elevated_parameters(command: &std::process::Command) -> Vec<u16> {
     parameters
 }
 
+#[cfg(all(test, windows))]
+mod elevated_command_line_tests {
+    use super::{elevated_parameters, quote_windows_arg};
+    use std::{ffi::OsStr, process::Command};
+
+    fn text(units: &[u16]) -> String {
+        String::from_utf16(units).expect("valid UTF-16")
+    }
+
+    #[test]
+    fn plain_argument_is_not_quoted() {
+        assert_eq!(
+            text(&quote_windows_arg(OsStr::new("plain"))),
+            "plain"
+        );
+    }
+
+    #[test]
+    fn argument_with_spaces_is_quoted() {
+        assert_eq!(
+            text(&quote_windows_arg(OsStr::new("two words"))),
+            r#""two words""#
+        );
+    }
+
+    #[test]
+    fn empty_argument_is_preserved() {
+        assert_eq!(
+            text(&quote_windows_arg(OsStr::new(""))),
+            r#""""#
+        );
+    }
+
+    #[test]
+    fn trailing_backslash_is_doubled_before_closing_quote() {
+        assert_eq!(
+            text(&quote_windows_arg(OsStr::new(r"C:\path with space\"))),
+            r#""C:\path with space\\""#,
+        );
+    }
+
+    #[test]
+    fn embedded_quote_is_escaped() {
+        assert_eq!(
+            text(&quote_windows_arg(OsStr::new(r#"say"hi"#))),
+            r#""say\"hi""#,
+        );
+    }
+
+    #[test]
+    fn backslash_before_quote_is_escaped() {
+        assert_eq!(
+            text(&quote_windows_arg(OsStr::new(r#"say\"hi"#))),
+            r#""say\\\"hi""#,
+        );
+    }
+
+    #[test]
+    fn elevated_parameters_join_arguments_and_end_with_nul() {
+        let mut command = Command::new("dummy.exe");
+        command
+            .arg("plain")
+            .arg("two words")
+            .arg("")
+            .arg(r"C:\path with space\");
+
+        let parameters = elevated_parameters(&command);
+
+        assert_eq!(parameters.last(), Some(&0));
+        assert_eq!(
+            text(&parameters[..parameters.len() - 1]),
+            r#"plain "two words" "" "C:\path with space\\""#,
+        );
+    }
+}
+
 /// ShellExecuteEx "runas": the UAC prompt, for a launcher that isn't elevated.
 #[cfg(windows)]
 pub(crate) fn run_elevated(command: &std::process::Command, exe: &Path, directory: &Path, declined: &str, ) -> Result<std::os::windows::io::OwnedHandle, String> {
