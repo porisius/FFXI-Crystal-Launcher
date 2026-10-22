@@ -742,10 +742,34 @@ impl Drop for LaunchedInjector {
     }
 }
 
-/// Start the injector for this launch.
-fn spawn_injector(p: &Prepared, pipe: &str, log: &mut SessionLog) -> Result<Injector, String> {
+fn spawn_injector(
+    p: &Prepared,
+    pipe: &str,
+    log: &mut SessionLog,
+) -> Result<Injector, String> {
+    spawn_injector_with_elevation(p, pipe, log, true)
+}
+
+fn spawn_park_injector(
+    p: &Prepared,
+    pipe: &str,
+    log: &mut SessionLog,
+) -> Result<Injector, String> {
+    spawn_injector_with_elevation(p, pipe, log, false)
+}
+
+fn spawn_injector_with_elevation(
+    p: &Prepared,
+    pipe: &str,
+    log: &mut SessionLog,
+    allow_elevation: bool,
+) -> Result<Injector, String> {
+    #[cfg(not(windows))]
+    let _ = allow_elevation;
+
     let pid = std::process::id();
     let exe = p.tool_dir.join(p.tool.exe());
+
     match p.tool {
         Tool::Vanilla => {
             let mut command = tools::vanilla_command(&p.loader, &p.install_dir, pipe, pid);
@@ -780,21 +804,60 @@ fn spawn_injector(p: &Prepared, pipe: &str, log: &mut SessionLog) -> Result<Inje
             }
             match command.spawn() {
                 Ok(child) => Ok(Injector::Child(child)),
-                // ERROR_ELEVATION_REQUIRED: Ashita-cli's manifest requires administrator.
+
                 #[cfg(windows)]
-                Err(e) if e.raw_os_error() == Some(740) => {
+                Err(e) if e.raw_os_error() == Some(740) && allow_elevation => {
                     log.line("Ashita-cli needs administrator rights; asking Windows.");
-                    run_elevated(&command, &exe, &p.tool_dir, t("The Windows administrator prompt for Ashita was declined. Ashita needs administrator rights: accept the prompt, or run the launcher as administrator."),).map(Injector::Elevated)
+                    run_elevated(
+                        &command,
+                        &exe,
+                        &p.tool_dir,
+                        t("The Windows administrator prompt for Ashita was declined. Ashita needs administrator rights: accept the prompt, or run the launcher as administrator."),
+                    )
+                    .map(Injector::Elevated)
                 }
-                Err(e) => Err(tf("Could not start {exe}: {error}", &[("exe", &exe.display()), ("error", &e)])),
+
+                #[cfg(windows)]
+                Err(e) if e.raw_os_error() == Some(740) && !allow_elevation => {
+                    Err(park::UNSUPPORTED.into())
+                }
+
+                Err(e) => Err(tf(
+                    "Could not start {exe}: {error}",
+                    &[("exe", &exe.display()), ("error", &e)],
+                )),
             }
         }
         Tool::Windower => {
-            let mut command = tools::windower_command(&p.tool_dir, &p.profile, &p.loader, pipe, pid)?;
-            command
-                .spawn()
-                .map(Injector::Child)
-                .map_err(|e| tf("Could not start {exe}: {error}", &[("exe", &exe.display()), ("error", &e)]))
+            let mut command =
+                tools::windower_command(&p.tool_dir, &p.profile, &p.loader, pipe, pid)?;
+
+            match command.spawn() {
+                Ok(child) => Ok(Injector::Child(child)),
+
+                #[cfg(windows)]
+                Err(e) if e.raw_os_error() == Some(740) && allow_elevation => {
+                    log.line("Windower needs administrator rights; asking Windows.");
+
+                    run_elevated(
+                        &command,
+                        &exe,
+                        &p.tool_dir,
+                        t("The Windows administrator prompt for Windower was declined. Windower needs administrator rights: accept the prompt, or run the launcher as administrator."),
+                    )
+                    .map(Injector::Elevated)
+                }
+
+                #[cfg(windows)]
+                Err(e) if e.raw_os_error() == Some(740) && !allow_elevation => {
+                    Err(park::UNSUPPORTED.into())
+                }
+
+                Err(e) => Err(tf(
+                    "Could not start {exe}: {error}",
+                    &[("exe", &exe.display()), ("error", &e)],
+                )),
+            }
         }
     }
 }

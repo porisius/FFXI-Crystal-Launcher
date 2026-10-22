@@ -214,7 +214,7 @@ pub(crate) fn park(config: &Config, plan: &super::Plan, account: &Account, abort
         progress(&line);
     }
     let profile = ParkKey::for_plan(account, plan).profile;
-    park_prepared(p, &profile, plan.auto_login, timing, progress, &mut super::spawn_injector, &super::TURNS,
+    park_prepared(p, &profile, plan.auto_login, timing, progress, &mut super::spawn_park_injector, &super::TURNS,
         super::Timeouts { abort: Some(abort), ..super::TIMEOUTS }, PARKED_LIMIT)
 }
 
@@ -224,8 +224,17 @@ pub(super) fn park_prepared(mut p: Prepared, profile: &str, auto_login: AutoLogi
     let started = Instant::now();
     let mut log = super::open_launch_log(&p, &mut timing, Some(&format!("park start: {} {profile}", p.tool.name())))?;
     let log_path = p.session.log.clone();
-    let host = match super::start_host(&mut p, &mut log, &mut timing, progress, spawn, turns, limits) {
+    let host = match super::start_host(
+        &mut p,
+        &mut log,
+        &mut timing,
+        progress,
+        spawn,
+        turns,
+        limits,
+    ) {
         Ok(host) => host,
+        Err(error) if error == UNSUPPORTED => return Err(error),
         Err(error) => return Err(super::fail(&mut log, &log_path, error)),
     };
     let tool_pid = match &host.injector.injector { super::Injector::Child(child) => Some(child.id()), _ => None };

@@ -1152,6 +1152,7 @@ pub(super) static JA: &[(&str, &str)] = &[
     ("The Visual C++ installer failed (exit code {code}).", "Visual C++のインストーラーが失敗しました（終了コード {code}）。"),
     ("The Windower profile name can't contain quotes or control characters.", "Windowerのプロファイル名に引用符や制御文字は使用できません。"),
     ("The Windows administrator prompt for Ashita was declined. Ashita needs administrator rights: accept the prompt, or run the launcher as administrator.", "Ashitaの管理者権限の確認が拒否されました。Ashitaには管理者権限が必要です。確認を許可するか、ランチャーを管理者として実行してください。"),
+    ("The Windows administrator prompt for Windower was declined. Windower needs administrator rights: accept the prompt, or run the launcher as administrator.", "Windowerの管理者権限の確認が拒否されました。Windowerには管理者権限が必要です。確認を許可するか、ランチャーを管理者として実行してください。"),
     ("The background resolution must be at least 256 × 256.", "背景解像度は256 × 256以上にしてください。"),
     ("The background session ended before Play could start. Sign in again.", "プレイ開始前にバックグラウンドのセッションが終了しました。もう一度ログインしてください。"),
     ("The background session ended before starting the game.", "ゲームの起動前にバックグラウンドのセッションが終了しました。"),
