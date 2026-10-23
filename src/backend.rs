@@ -235,8 +235,8 @@ pub struct Account {
     pub se_password: String,
     /// UI preference only: US/EU/JP. It is not used as a native protocol byte.
     pub region: u8,
-    /// How this account starts the game; `None` follows the global default (Home / Launch
-    /// tools). Private-server accounts always use the native client.
+    /// How this account starts the game. Retail `None` follows the global default.
+    /// Private `None` means direct xiloader; Ashita and Windower are explicit overrides.
     pub launch_with: Option<LaunchWith>,
     /// The Ashita boot config (a file name in `config\boot`) this account's ini is based on;
     /// `None` uses the Launch tools default.
@@ -249,7 +249,10 @@ impl Account {
     /// What this account launches with, given the global default.
     pub(crate) fn effective_launch_with(&self, default: LaunchWith) -> LaunchWith {
         match self.mode {
-            AccountMode::Private => LaunchWith::Native,
+            AccountMode::Private => self
+                .launch_with
+                .filter(|tool| matches!(tool, LaunchWith::Ashita | LaunchWith::Windower))
+                .unwrap_or(LaunchWith::Native),
             AccountMode::Retail => self
                 .launch_with
                 .filter(|tool| *tool != LaunchWith::Native)
@@ -827,7 +830,15 @@ fn login_inner(
     let otp = Zeroizing::new(otp);
     match account.mode {
         AccountMode::Private => {
-            crate::private_server::launch(config, account, otp, timing, &mut progress)
+            crate::private_server::launch_with_plan(
+                config,
+                account,
+                otp,
+                via,
+                true,
+                timing,
+                &mut progress,
+            )
         }
         AccountMode::Retail => {
             let plan = via.ok_or_else(|| t("The native client is temporarily unavailable. Retail accounts must launch through Windower or Ashita; saved private-server accounts are kept.").to_owned())?;
@@ -849,10 +860,11 @@ fn login_inner_with_hairpin(
     let otp = Zeroizing::new(otp);
     match account.mode {
         AccountMode::Private => {
-            crate::private_server::launch_with_hairpin(
+            crate::private_server::launch_with_plan(
                 config,
                 account,
                 otp,
+                via,
                 hairpin,
                 timing,
                 &mut progress,
@@ -1152,9 +1164,18 @@ mod tests {
             value.effective_launch_with(LaunchWith::Windower),
             LaunchWith::Ashita
         );
-        // Private servers always use the native client.
+        // Private servers default to direct xiloader, but can explicitly use a front end.
         let mut private = account();
+        assert_eq!(
+            private.effective_launch_with(LaunchWith::Windower),
+            LaunchWith::Native
+        );
         private.launch_with = Some(LaunchWith::Ashita);
+        assert_eq!(
+            private.effective_launch_with(LaunchWith::Windower),
+            LaunchWith::Ashita
+        );
+        private.launch_with = Some(LaunchWith::Vanilla);
         assert_eq!(
             private.effective_launch_with(LaunchWith::Windower),
             LaunchWith::Native

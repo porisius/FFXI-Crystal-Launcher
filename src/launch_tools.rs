@@ -198,16 +198,14 @@ impl Settings {
         }
     }
 
-    /// Retail choices fall back to an available launcher. Private-server accounts
-    /// use Native as a sentinel and launch separately through xiloader.
+    /// Retail choices fall back to the configured default. Private-server accounts default
+    /// to Native (direct xiloader) and may explicitly choose Ashita or Windower.
     pub(crate) fn launch_with_for(&self, account: &Account) -> LaunchWith {
         account.effective_launch_with(self.launch_with)
     }
 
-    /// The retail launch for `account`, or `None` when its effective selection is Native.
-    /// Private-server accounts intentionally have no retail launch plan because they launch
-    /// separately through xiloader. The account's own boot config and Windower profile win
-    /// over the defaults set here.
+    /// The selected front-end plan, or `None` for direct private xiloader.
+    /// The account's own boot config and Windower profile win over the defaults set here.
     pub(crate) fn launch_plan(&self, account: &Account) -> Option<Plan> {
         let tool = match self.launch_with_for(account) {
             LaunchWith::Native => return None,
@@ -690,9 +688,11 @@ mod tests {
         assert_eq!(settings.launch_plan(&account).unwrap().tool, Tool::Windower);
         let mut private = retail();
         private.mode = crate::backend::AccountMode::Private;
-        private.launch_with = Some(LaunchWith::Windower);
         assert_eq!(settings.launch_with_for(&private), LaunchWith::Native);
         assert!(settings.launch_plan(&private).is_none());
+        private.launch_with = Some(LaunchWith::Windower);
+        assert_eq!(settings.launch_with_for(&private), LaunchWith::Windower);
+        assert_eq!(settings.launch_plan(&private).unwrap().tool, Tool::Windower);
     }
 
     #[test]

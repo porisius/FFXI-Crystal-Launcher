@@ -953,6 +953,15 @@ fn elevated_parameters(command: &std::process::Command) -> Vec<u16> {
     parameters
 }
 
+#[cfg(windows)]
+pub(crate) fn command_arguments(command: &std::process::Command) -> String {
+    let mut parameters = elevated_parameters(command);
+    if parameters.last() == Some(&0) {
+        parameters.pop();
+    }
+    String::from_utf16_lossy(&parameters)
+}
+
 #[cfg(all(test, windows))]
 mod elevated_command_line_tests {
     use super::{elevated_parameters, quote_windows_arg};

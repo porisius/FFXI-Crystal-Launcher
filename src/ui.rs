@@ -664,7 +664,7 @@ pub(crate) enum LaunchWith {
 }
 impl LaunchWith {
     pub(crate) const ALL: [LaunchWith; 3] = [LaunchWith::Vanilla, LaunchWith::Windower, LaunchWith::Ashita];
-    pub(crate) const PRIVATE: [LaunchWith; 1] = [LaunchWith::Native];
+    pub(crate) const PRIVATE: [LaunchWith; 3] = [LaunchWith::Native, LaunchWith::Windower, LaunchWith::Ashita];
 
     pub(crate) fn retail(self) -> Self {
         if self == Self::Native { Self::default() } else { self }
@@ -3902,6 +3902,7 @@ fn account_editor<'a>(
         .spacing(16),
     );
     if !retail {
+        form = form.push(launch_section(app, account, c));
         form = form.push(
             column![
                 crate::controller_nav::checkbox(editor.hairpin)
@@ -4136,25 +4137,53 @@ fn import_accounts<'a>(app: &'a App, base: Element<'a, Message>) -> Element<'a, 
 fn launch_section<'a>(app: &'a App, account: &'a crate::backend::Account, c: Colors) -> Element<'a, Message> {
     let light = app.settings.light_theme;
     let default = app.settings.launch_with;
-    let choices = [
-        (t("Use default"), None),
-        (t("Vanilla"), Some(LaunchWith::Vanilla)),
-        ("Ashita", Some(LaunchWith::Ashita)),
-        ("Windower", Some(LaunchWith::Windower)),
-    ]
-    .into_iter()
-    .map(|(label, value)| segment(label, account.launch_with.filter(|tool| *tool != LaunchWith::Native) == value, Message::EditorLaunchWith(value)))
-    .collect();
-    let hint = match account.launch_with {
-        None => tf("Uses the default launcher, {default}, set in Settings → System → Launch tools.", &[("default", &default)]),
-        Some(LaunchWith::Native) => tf("The former native client is unavailable. This retail account now uses {default}.", &[("default", &default)]),
-        Some(LaunchWith::Vanilla) => t("Starts FFXI directly with Crystal, without Windower or Ashita. Uses the game's settings and Crystal's saved menu resolution.").into(),
-        Some(tool) => tf("Signs in without PlayOnline and starts the game through {tool}.", &[("tool", &tool)]),
+    let private = account.mode == AccountMode::Private;
+    let current = if private {
+        account.launch_with.filter(|tool| matches!(tool, LaunchWith::Ashita | LaunchWith::Windower))
+    } else {
+        account.launch_with.filter(|tool| *tool != LaunchWith::Native)
+    };
+    let choices = if private {
+        vec![
+            ("xiloader", None),
+            ("Ashita", Some(LaunchWith::Ashita)),
+            ("Windower", Some(LaunchWith::Windower)),
+        ]
+    } else {
+        vec![
+            (t("Use default"), None),
+            (t("Vanilla"), Some(LaunchWith::Vanilla)),
+            ("Ashita", Some(LaunchWith::Ashita)),
+            ("Windower", Some(LaunchWith::Windower)),
+        ]
+    };
+    let choices = choices
+        .into_iter()
+        .map(|(label, value)| segment(label, current == value, Message::EditorLaunchWith(value)))
+        .collect();
+    let effective = account.effective_launch_with(default);
+    let hint = if private {
+        match effective {
+            LaunchWith::Native | LaunchWith::Vanilla => {
+                t("Starts the private-server client directly through xiloader.").into()
+            }
+            tool => tf(
+                "Starts xiloader through {tool} for this private-server account.",
+                &[("tool", &tool)],
+            ),
+        }
+    } else {
+        match account.launch_with {
+            None => tf("Uses the default launcher, {default}, set in Settings → System → Launch tools.", &[("default", &default)]),
+            Some(LaunchWith::Native) => tf("The former native client is unavailable. This retail account now uses {default}.", &[("default", &default)]),
+            Some(LaunchWith::Vanilla) => t("Starts FFXI directly with Crystal, without Windower or Ashita. Uses the game's settings and Crystal's saved menu resolution.").into(),
+            Some(tool) => tf("Signs in without PlayOnline and starts the game through {tool}.", &[("tool", &tool)]),
+        }
     };
     let mut section = column![column![form_label(t("Launch with")), segmented(choices), sub_text(hint, 12.0)].spacing(8)].spacing(20);
     let found = &app.launch_tools.detected;
     let tools = &app.settings;
-    match account.effective_launch_with(default) {
+    match effective {
         LaunchWith::Native | LaunchWith::Vanilla => {}
         LaunchWith::Ashita => {
             let base = tools.ashita_boot_ini.trim();
@@ -4195,17 +4224,19 @@ fn launch_section<'a>(app: &'a App, account: &'a crate::backend::Account, c: Col
             );
         }
     }
-    // Signing in when Crystal opens is no per-account choice: Settings → System has its switch.
-    let choice = app.editor.as_ref().map(|editor| editor.auto_login).unwrap_or_default();
-    section = section.push(column![
-        crate::controller_nav::checkbox(choice.enabled)
-            .label(t("Log in to a character automatically"))
-            .on_toggle(Message::EditorAutoLogin).size(18).text_size(14).style(check),
-        row![form_label(t("Character slot")),
-            crate::controller_nav::pick_list((1u8..=16).collect::<Vec<_>>(), Some(choice.character_slot), Message::EditorCharacterSlot)
-                .text_size(14).padding([8, 12])].spacing(16).align_y(Alignment::Center),
-        sub_text(t("1 selects the first character. Each client can log in in the background; unavailable slots stay at character selection."), 12.0)
-    ].spacing(8));
+    if !private {
+        // Signing in when Crystal opens is no per-account choice: Settings → System has its switch.
+        let choice = app.editor.as_ref().map(|editor| editor.auto_login).unwrap_or_default();
+        section = section.push(column![
+            crate::controller_nav::checkbox(choice.enabled)
+                .label(t("Log in to a character automatically"))
+                .on_toggle(Message::EditorAutoLogin).size(18).text_size(14).style(check),
+            row![form_label(t("Character slot")),
+                crate::controller_nav::pick_list((1u8..=16).collect::<Vec<_>>(), Some(choice.character_slot), Message::EditorCharacterSlot)
+                    .text_size(14).padding([8, 12])].spacing(16).align_y(Alignment::Center),
+            sub_text(t("1 selects the first character. Each client can log in in the background; unavailable slots stay at character selection."), 12.0)
+        ].spacing(8));
+    }
     section.into()
 }
 

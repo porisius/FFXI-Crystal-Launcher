@@ -3140,13 +3140,15 @@ impl App {
             }
             let account = row.account.clone();
             if account.mode == AccountMode::Private {
-                // Private accounts have no PlayOnline-only/social session. Their Play path
-                // uses the same detached Crystal session worker, but that worker dispatches
-                // to xiloader instead of polcore/crystal-loader.
+                // Private accounts have no PlayOnline-only/social session. They always
+                // authenticate through xiloader, either directly or through the selected
+                // Ashita/Windower front end.
                 if social_only {
                     continue;
                 }
                 let config = self.settings.config_for(&self.config, &account);
+                let via = self.launch_tools.launch_plan(&self.settings, &account);
+                let launcher = via.as_ref().map_or("xiloader", |plan| plan.tool.name());
                 let hairpin = !self.settings.account_no_hairpin.contains(&key);
                 row.launch_generation = row.launch_generation.wrapping_add(1);
                 let generation = row.launch_generation;
@@ -3164,11 +3166,11 @@ impl App {
                 row.otp_spent = !otp.is_empty();
                 row.otp_unknown = false;
 
-                row.status = "Starting private-server client through xiloader…".into();
+                row.status = format!("Starting private-server client through {launcher}…");
                 let sender = self.sender.clone();
                 let worker_key = key.clone();
-                if !tools.contains(&"xiloader") {
-                    tools.push("xiloader");
+                if !tools.contains(&launcher) {
+                    tools.push(launcher);
                 }
                 all_native = false;
                 let result = std::thread::Builder::new()
@@ -3186,7 +3188,7 @@ impl App {
                             &config,
                             account,
                             otp,
-                            None,
+                            via,
                             hairpin,
                             clicked,
                             &mut progress,
@@ -4288,14 +4290,24 @@ impl App {
         let Some(row) = self.accounts.iter_mut().find(|r| r.key == key) else {
             return Task::none();
         };
-        if choice == ui::LaunchWith::Native
-            || row.account.mode == AccountMode::Private
-            || row.account.launch_with == Some(choice)
-        {
+        let next = match row.account.mode {
+            AccountMode::Private => match choice {
+                ui::LaunchWith::Native => None,
+                ui::LaunchWith::Ashita | ui::LaunchWith::Windower => Some(choice),
+                ui::LaunchWith::Vanilla => return Task::none(),
+            },
+            AccountMode::Retail => {
+                if choice == ui::LaunchWith::Native {
+                    return Task::none();
+                }
+                Some(choice)
+            }
+        };
+        if row.account.launch_with == next {
             return Task::none();
         }
         if self.preview {
-            row.account.launch_with = Some(choice);
+            row.account.launch_with = next;
             return Task::none();
         }
         if !self.vault_ready || self.vault_saving {
@@ -4308,7 +4320,7 @@ impl App {
             .map(|r| {
                 let mut account = r.account.clone();
                 if r.key == key {
-                    account.launch_with = Some(choice);
+                    account.launch_with = next;
                 }
                 account
             })

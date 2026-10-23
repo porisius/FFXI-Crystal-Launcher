@@ -1112,6 +1112,8 @@ pub(super) static JA: &[(&str, &str)] = &[
     ("Starting · {name}", "起動中 · {name}"),
     ("Starting…", "起動しています…"),
     ("Starts FFXI directly with Crystal, without Windower or Ashita. Uses the game's settings and Crystal's saved menu resolution.", "CrystalからFFXIを直接起動します。WindowerやAshitaは使用しません。ゲームの設定とCrystalに保存したメニュー解像度を使用します。"),
+    ("Starts the private-server client directly through xiloader.", "プライベートサーバーのクライアントをxiloaderから直接起動します。"),
+    ("Starts xiloader through {tool} for this private-server account.", "このプライベートサーバーアカウントでは、{tool}経由でxiloaderを起動します。"),
     ("Startup sign-in skipped: a session is still running.", "起動時のログインをスキップしました：セッションがまだ実行中です。"),
     ("Startup sign-in waits for the previous session to end.", "起動時のログインは、前のセッションが終了するまで待機します。"),
     ("Status options", "状態の設定"),
