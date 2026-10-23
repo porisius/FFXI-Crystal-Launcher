@@ -3901,6 +3901,23 @@ fn account_editor<'a>(
         ]
         .spacing(16),
     );
+    if !retail {
+        form = form.push(
+            column![
+                crate::controller_nav::checkbox(editor.hairpin)
+                    .label(t("Use xiloader hairpin mode"))
+                    .on_toggle(Message::EditorHairpin)
+                    .size(18)
+                    .text_size(14)
+                    .style(check),
+                sub_text(
+                    t("Pass --hairpin to xiloader. Disable this if your private-server setup does not require it."),
+                    12.0
+                )
+            ]
+            .spacing(8),
+        );
+    }
     if retail {
         form = form.push(
             row![

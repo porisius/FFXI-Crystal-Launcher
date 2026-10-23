@@ -165,6 +165,10 @@ pub(crate) struct Settings {
     legacy_startup_signin: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub account_auto_login: HashMap<String, pol_less::AutoLogin>,
+    /// Private-server accounts that should omit xiloader's --hairpin argument.
+    /// Absence means hairpin is enabled, preserving the historical/default behavior.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub account_no_hairpin: BTreeSet<String>,
     /// Accounts whose last successful sign-in took a one-time code (learned, never the code):
     /// a "Wait and play" released after a restart asks for a code instead of signing in
     /// without one, and Crystal never signs them in by itself.
@@ -225,6 +229,7 @@ impl Default for Settings {
             account_auto_away: HashMap::new(),
             legacy_startup_signin: BTreeSet::new(),
             account_auto_login: HashMap::new(),
+            account_no_hairpin: BTreeSet::new(),
             account_otp: BTreeSet::new(),
             account_no_otp: BTreeSet::new(),
             auto_sign_in: true,
@@ -510,6 +515,7 @@ pub(crate) struct Editor {
     pub game_install: String,
     pub dat_overlays: Vec<String>,
     pub auto_login: pol_less::AutoLogin,
+    pub hairpin: bool,
 }
 
 /// The Viewer refreshes its last-input stamp from window input (app 10060039)
@@ -674,6 +680,7 @@ pub(crate) enum Message {
     // the editor's Launch section (None = use the default).
     EditorLaunchWith(Option<ui::LaunchWith>),
     EditorAutoLogin(bool),
+    EditorHairpin(bool),
     EditorCharacterSlot(u8),
     AccountImport(account_import_ui::Msg),
     EditorBootIni(Option<String>),
@@ -1225,6 +1232,7 @@ impl App {
                     game_install: String::new(),
                     dat_overlays: Vec::new(),
                     auto_login: pol_less::AutoLogin::default(),
+                    hairpin: true,
                 });
             }
             if std::env::args().any(|a| a == "--preview-live-news") {
@@ -3139,6 +3147,7 @@ impl App {
                     continue;
                 }
                 let config = self.settings.config_for(&self.config, &account);
+                let hairpin = !self.settings.account_no_hairpin.contains(&key);
                 row.launch_generation = row.launch_generation.wrapping_add(1);
                 let generation = row.launch_generation;
                 row.signed_out = false;
@@ -3173,11 +3182,12 @@ impl App {
                                     .for_launch(&progress_key, generation),
                             );
                         };
-                        let result = session_worker::launch(
+                        let result = session_worker::launch_with_hairpin(
                             &config,
                             account,
                             otp,
                             None,
+                            hairpin,
                             clicked,
                             &mut progress,
                         );
@@ -5664,6 +5674,7 @@ impl App {
                         game_install: String::new(),
                         dat_overlays: Vec::new(),
                         auto_login: pol_less::AutoLogin::default(),
+                        hairpin: true,
                     });
                 }
             }
@@ -5694,6 +5705,7 @@ impl App {
                             .copied()
                             .unwrap_or_default()
                             .normalized(),
+                        hairpin: !self.settings.account_no_hairpin.contains(&key),
                         key: Some(key),
                         account: row.account.clone(),
                     });
@@ -5751,6 +5763,13 @@ impl App {
                 if !self.vault_saving {
                     if let Some(editor) = &mut self.editor {
                         editor.auto_login.enabled = enabled;
+                    }
+                }
+            }
+            Message::EditorHairpin(enabled) => {
+                if !self.vault_saving {
+                    if let Some(editor) = &mut self.editor {
+                        editor.hairpin = enabled;
                     }
                 }
             }
@@ -6312,6 +6331,9 @@ impl App {
                                 if let Some(choice) = settings.account_auto_login.remove(previous) {
                                     settings.account_auto_login.insert(key.clone(), choice);
                                 }
+                                if settings.account_no_hairpin.remove(previous) {
+                                    settings.account_no_hairpin.insert(key.clone());
+                                }
                                 if let Some(selected) = &mut settings.selected_accounts {
                                     if selected.remove(previous) {
                                         selected.insert(key);
@@ -6336,6 +6358,7 @@ impl App {
                         settings
                             .account_auto_login
                             .retain(|key, _| saved.contains(key));
+                        settings.account_no_hairpin.retain(|key| saved.contains(key));
                         // Learned from sign-ins of that login: a changed login learns it again.
                         settings.account_otp.retain(|key| saved.contains(key));
                         settings.account_no_otp.retain(|key| saved.contains(key));
@@ -6366,6 +6389,11 @@ impl App {
                                             .collect(),
                                     );
                                 }
+                                if editor.account.mode == AccountMode::Private && !editor.hairpin {
+                                    settings.account_no_hairpin.insert(key.clone());
+                                } else {
+                                    settings.account_no_hairpin.remove(&key);
+                                }
                                 if editor.auto_login != pol_less::AutoLogin::default() {
                                     settings
                                         .account_auto_login
@@ -6389,6 +6417,7 @@ impl App {
                             || settings.account_overlays != self.settings.account_overlays
                             || settings.account_auto_away != self.settings.account_auto_away
                             || settings.account_auto_login != self.settings.account_auto_login
+                            || settings.account_no_hairpin != self.settings.account_no_hairpin
                             || settings.selected_accounts != self.settings.selected_accounts
                             || settings.account_order != self.settings.account_order
                             || settings.account_otp != self.settings.account_otp
@@ -10130,12 +10159,13 @@ mod tests {
         assert!(app
             .editor
             .as_ref()
-            .is_some_and(|editor| editor.account.mode == AccountMode::Retail));
+            .is_some_and(|editor| editor.account.mode == AccountMode::Retail && editor.hairpin));
         let _ = app.update(Message::EditorMode(AccountMode::Private));
         assert!(app
             .editor
             .as_ref()
-            .is_some_and(|editor| editor.account.mode == AccountMode::Private));
+            .is_some_and(|editor| editor.account.mode == AccountMode::Private && editor.hairpin));
+        let _ = app.update(Message::EditorHairpin(false));
         let _ = app.update(Message::EditorMode(AccountMode::Retail));
         assert!(app
             .editor
@@ -13833,6 +13863,7 @@ mod tests {
             game_install: String::new(),
             dat_overlays: Vec::new(),
             auto_login: pol_less::AutoLogin::default(),
+            hairpin: true,
         });
         let _ = app.update(Message::EditorLaunchWith(Some(ui::LaunchWith::Windower)));
         assert_eq!(
@@ -13862,6 +13893,7 @@ mod tests {
             game_install: String::new(),
             dat_overlays: Vec::new(),
             auto_login: pol_less::AutoLogin::default(),
+            hairpin: true,
         });
         app.vault_saving = true;
         let _ = app.update(Message::AccountsSaved(Err("Save failed".into())));
@@ -14023,6 +14055,7 @@ mod tests {
             game_install: path.into(),
             dat_overlays: vec![r"C:\Mods\High Priority".into(), r"C:\Mods\Fallback".into()],
             auto_login: pol_less::AutoLogin::default(),
+            hairpin: true,
         });
         let values: Vec<_> = app.accounts.iter().map(|r| r.account.clone()).collect();
         let _ = app.update(Message::AccountsSaved(Ok(values.clone())));
@@ -14078,6 +14111,7 @@ mod tests {
         app.settings
             .account_overlays
             .insert(previous.clone(), vec![r"C:\Mods\Account".into()]);
+        app.settings.account_no_hairpin.insert(previous.clone());
         app.settings.account_no_otp.insert(previous.clone());
         app.settings.account_order = vec![
             previous.clone(),
@@ -14118,6 +14152,7 @@ mod tests {
         let reloaded: Settings =
             serde_json::from_slice(&serde_json::to_vec(&app.settings).unwrap()).unwrap();
         assert_eq!(reloaded.account_auto_login, app.settings.account_auto_login);
+        assert_eq!(reloaded.account_no_hairpin, app.settings.account_no_hairpin);
         assert_eq!(
             app.settings.account_installs.get(&key).map(String::as_str),
             Some(r"C:\Games\Account")
@@ -14168,6 +14203,44 @@ mod tests {
         assert!(app.settings.account_overlays.is_empty() && app.settings.account_no_otp.is_empty());
         assert!(app.settings.account_auto_login.is_empty());
         assert!(!app.settings.account_order.contains(&key));
+    }
+
+    #[test]
+    fn private_hairpin_preference_migrates_with_account_key_and_is_pruned_on_delete() {
+        let mut app = app();
+
+        let mut private = app.accounts[0].account.clone();
+        private.mode = AccountMode::Private;
+        private.server = "play.example.test".into();
+        private.pol_id = "fixture-user".into();
+
+        app.replace_accounts(vec![private]);
+
+        let previous = app.accounts[0].key.clone();
+        app.settings.account_no_hairpin.insert(previous.clone());
+
+        let _ = app.update(Message::EditAccount(previous.clone()));
+        assert!(app.editor.as_ref().is_some_and(|editor| !editor.hairpin));
+
+        let _ = app.update(Message::EditorChanged(
+            Field::PolId,
+            "fixture-user-renamed".into(),
+        ));
+
+        let edited = app.editor.as_ref().unwrap().account.clone();
+        let key = account_key(&edited);
+
+        let _ = app.update(Message::AccountsSaved(Ok(vec![edited])));
+
+        assert!(app.settings.account_no_hairpin.contains(&key));
+        assert!(!app.settings.account_no_hairpin.contains(&previous));
+
+        let reloaded: Settings =
+            serde_json::from_slice(&serde_json::to_vec(&app.settings).unwrap()).unwrap();
+        assert_eq!(reloaded.account_no_hairpin, app.settings.account_no_hairpin);
+
+        let _ = app.update(Message::AccountsSaved(Ok(Vec::new())));
+        assert!(app.settings.account_no_hairpin.is_empty());
     }
 
     #[test]

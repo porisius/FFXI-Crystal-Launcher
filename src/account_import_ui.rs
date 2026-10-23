@@ -126,7 +126,10 @@ impl App {
                     self.editor = Some(Editor {
                         game_install: key.as_ref().and_then(|key| self.settings.account_installs.get(key)).cloned().unwrap_or_default(),
                         dat_overlays: key.as_ref().and_then(|key| self.settings.account_overlays.get(key)).cloned().unwrap_or_default(),
-                        auto_login, key, account,
+                        auto_login,
+                        hairpin: true,
+                        key,
+                        account,
                     });
                     state.open = false;
                     self.status = t("Review imported account details, complete missing fields, then save. Existing saved fields were kept.").into();
