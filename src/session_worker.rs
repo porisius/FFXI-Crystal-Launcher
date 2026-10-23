@@ -52,12 +52,18 @@ pub(crate) fn take_native_batch(directory: &Path) -> Option<Vec<u8>> {
     Some(format!("{{\"type\":\"native_batch_game\",\"token\":{}}}\n", serde_json::to_string(&request.token).ok()?).into_bytes())
 }
 
+fn default_hairpin() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize)]
 struct Request {
     config: Config,
     account: Account,
     otp: String,
     via: Option<Plan>,
+    #[serde(default = "default_hairpin")]
+    hairpin: bool,
     elapsed_ms: u64,
     #[serde(default)]
     clicked_clock: Option<crate::launch_timing::MonotonicStamp>,
@@ -883,12 +889,29 @@ fn emit(event: &Event) {
 }
 
 pub(crate) fn run() -> i32 {
-    run_with(|config, account, otp, via, clicked, progress| {
-        backend::login_with_progress(config, account, otp, via, clicked, progress)
+    run_with(|config, account, otp, via, hairpin, clicked, progress| {
+        backend::login_with_progress_hairpin(
+            config,
+            account,
+            otp,
+            via,
+            hairpin,
+            clicked,
+            progress,
+        )
     })
 }
 
-type Login<'a> = dyn FnOnce(&Config, Account, String, Option<Plan>, Instant, &mut dyn FnMut(&str)) -> Result<LaunchResult, String> + 'a;
+type Login<'a> = dyn FnOnce(
+        &Config,
+        Account,
+        String,
+        Option<Plan>,
+        bool,
+        Instant,
+        &mut dyn FnMut(&str),
+    ) -> Result<LaunchResult, String>
+    + 'a;
 
 /// One length-prefixed JSON frame from the window (credentials travel only this way).
 fn read_frame<T: serde::de::DeserializeOwned>(input: &mut impl Read) -> Result<T, String> {
@@ -909,6 +932,7 @@ fn run_with(
         Account,
         String,
         Option<Plan>,
+        bool,
         Instant,
         &mut dyn FnMut(&str),
     ) -> Result<LaunchResult, String>,
@@ -958,6 +982,7 @@ fn serve(mut request: Request, login: Box<Login<'_>>, emit: &mut dyn FnMut(&Even
                 request.account.clone(),
                 std::mem::take(&mut request.otp),
                 request.via.clone(),
+                request.hairpin,
                 clicked,
                 &mut progress,
             )
@@ -1075,7 +1100,7 @@ fn run_park_with<H: ParkHost>(
             == crate::pol_less::park::ParkKey::for_plan(&parking.account, &parking.plan));
     let history = request.config.history_path();
     let label = request.account.label.clone();
-    let login = Box::new(move |config: &Config, account: Account, otp: String, via: Option<Plan>, clicked: Instant, progress: &mut dyn FnMut(&str)| {
+    let login = Box::new(move |config: &Config, account: Account, otp: String, via: Option<Plan>, _hairpin: bool, clicked: Instant, progress: &mut dyn FnMut(&str)| {
         let Some(plan) = via.clone().filter(|_| same) else {
             host.kill();
             return cold(config, account, otp, via, clicked, progress);
@@ -1250,6 +1275,7 @@ impl ParkWorker {
             account,
             otp: otp.to_string(),
             via: Some(via),
+            hairpin: true,
             elapsed_ms: clicked.elapsed().as_millis().min(u64::MAX as u128) as u64,
             clicked_clock: crate::launch_timing::MonotonicStamp::capture(clicked),
         };
@@ -1585,13 +1611,33 @@ pub(crate) fn launch(
     clicked: Instant,
     progress: impl FnMut(&str),
 ) -> Result<LaunchResult, String> {
+    launch_with_hairpin(config, account, otp, via, true, clicked, progress)
+}
+
+pub(crate) fn launch_with_hairpin(
+    config: &Config,
+    account: Account,
+    otp: String,
+    via: Option<Plan>,
+    hairpin: bool,
+    clicked: Instant,
+    progress: impl FnMut(&str),
+) -> Result<LaunchResult, String> {
     let mut otp = Zeroizing::new(otp);
     // Local readiness only: the Viewer's W2U goes out at Connect, inside this sign-in
     // (pol-spec 07c §1, §3), never before it.
     if account.mode == backend::AccountMode::Retail && find(config, &account).is_none() {
         crate::viewer::gate(&crate::viewer::local_status())?;
     }
-    launch_preflighted(config, account, std::mem::take(&mut *otp), via, clicked, progress)
+    launch_preflighted_with_hairpin(
+        config,
+        account,
+        std::mem::take(&mut *otp),
+        via,
+        hairpin,
+        clicked,
+        progress,
+    )
 }
 
 /// Finish idle POL sessions through their native sign-out path before file work.
@@ -1688,28 +1734,54 @@ fn launch_preflighted(
     clicked: Instant,
     progress: impl FnMut(&str),
 ) -> Result<LaunchResult, String> {
+    launch_preflighted_with_hairpin(config, account, otp, via, true, clicked, progress)
+}
+
+fn launch_preflighted_with_hairpin(
+    config: &Config,
+    account: Account,
+    otp: String,
+    via: Option<Plan>,
+    hairpin: bool,
+    clicked: Instant,
+    progress: impl FnMut(&str),
+) -> Result<LaunchResult, String> {
     let mut otp = Zeroizing::new(otp);
     let mut command = Command::new(
         std::env::current_exe().map_err(|_| t("Could not locate Crystal's session worker."))?,
     );
     command.arg("--session-worker");
-    launch_command(
+    launch_command_with_hairpin(
         command,
         config,
         account,
         std::mem::take(&mut *otp),
         via,
+        hairpin,
         clicked,
         progress,
     )
 }
 
 fn launch_command(
+    command: Command,
+    config: &Config,
+    account: Account,
+    otp: String,
+    via: Option<Plan>,
+    clicked: Instant,
+    progress: impl FnMut(&str),
+) -> Result<LaunchResult, String> {
+    launch_command_with_hairpin(command, config, account, otp, via, true, clicked, progress)
+}
+
+fn launch_command_with_hairpin(
     mut command: Command,
     config: &Config,
     account: Account,
     otp: String,
     via: Option<Plan>,
+    hairpin: bool,
     clicked: Instant,
     mut progress: impl FnMut(&str),
 ) -> Result<LaunchResult, String> {
@@ -1747,6 +1819,7 @@ fn launch_command(
         account,
         otp: std::mem::take(&mut *otp),
         via,
+        hairpin,
         elapsed_ms: clicked.elapsed().as_millis().min(u64::MAX as u128) as u64,
         clicked_clock: crate::launch_timing::MonotonicStamp::capture(clicked),
     };
@@ -2518,7 +2591,7 @@ mod tests {
     #[ignore = "executed only in a fixture subprocess"]
     fn worker_fixture() {
         let root = PathBuf::from(std::env::var_os("CRYSTAL_SESSION_FIXTURE").unwrap());
-        let code = run_with(|config, account, mut otp, _via, _clicked, progress| {
+        let code = run_with(|config, account, mut otp, _via, _hairpin, _clicked, progress| {
             otp.zeroize();
             progress("Fixture authenticated");
             let alive = Arc::new(AtomicBool::new(true));
@@ -2680,7 +2753,7 @@ mod tests {
     }
 
     fn play_request(config: &Config, account: Account, trigger: crate::launch_timing::LaunchTrigger) -> Request {
-        Request { config: config.clone(), account, otp: "123456".into(), via: Some(Plan { trigger, ..park_plan() }), elapsed_ms: 0, clicked_clock: None }
+        Request { config: config.clone(), account, otp: "123456".into(), via: Some(Plan { trigger, ..park_plan() }), hairpin: true, elapsed_ms: 0, clicked_clock: None }
     }
 
     /// 07d §1.4: frame 1 never carries a password or OTP.

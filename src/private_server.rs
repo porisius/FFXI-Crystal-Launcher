@@ -22,6 +22,16 @@ use std::{
 };
 
 fn xiloader_command(loader: &Path, game: &Path, account: &Account, otp: &str) -> Command {
+    xiloader_command_with_hairpin(loader, game, account, otp, true)
+}
+
+fn xiloader_command_with_hairpin(
+    loader: &Path,
+    game: &Path,
+    account: &Account,
+    otp: &str,
+    hairpin: bool,
+) -> Command {
     let mut command = Command::new(loader);
 
     command
@@ -37,9 +47,9 @@ fn xiloader_command(loader: &Path, game: &Path, account: &Account, otp: &str) ->
         command.arg("--otp").arg(otp);
     }
 
-    // Keep parity with the private-server launch profiles this integration
-    // replaces. A later network-policy milestone will decide this dynamically.
-    command.arg("--hairpin");
+    if hairpin {
+        command.arg("--hairpin");
+    }
 
     command
 }
@@ -48,6 +58,17 @@ pub(crate) fn launch(
     config: &Config,
     account: Account,
     otp: zeroize::Zeroizing<String>,
+    timing: Timeline,
+    progress: impl FnMut(&str),
+) -> Result<LaunchResult, String> {
+    launch_with_hairpin(config, account, otp, true, timing, progress)
+}
+
+pub(crate) fn launch_with_hairpin(
+    config: &Config,
+    account: Account,
+    otp: zeroize::Zeroizing<String>,
+    hairpin: bool,
     mut timing: Timeline,
     mut progress: impl FnMut(&str),
 ) -> Result<LaunchResult, String> {
@@ -124,7 +145,8 @@ pub(crate) fn launch(
         .map_err(|e| format!("Could not start the private-server monitor: {e}"))?;
 
     progress("Starting private-server client through xiloader…");
-    let mut command = xiloader_command(&loader, &game, &account, otp.as_str());
+    let mut command =
+        xiloader_command_with_hairpin(&loader, &game, &account, otp.as_str(), hairpin);
     command
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -231,6 +253,40 @@ mod tests {
         .collect();
 
         assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn xiloader_omits_hairpin_when_disabled() {
+        let account = Account {
+            label: "Fixture".into(),
+            mode: backend::AccountMode::Private,
+            server: "play.example.test".into(),
+            pol_id: "fixture-user".into(),
+            pol_password: "fixture-secret".into(),
+            se_id: String::new(),
+            se_password: String::new(),
+            region: 0,
+            launch_with: None,
+            ashita_boot_ini: None,
+            windower_profile: None,
+        };
+
+        let command = xiloader_command_with_hairpin(
+            Path::new(r"C:\FFXI\xiloader.exe"),
+            Path::new(r"C:\FFXI"),
+            &account,
+            "123456",
+            false,
+        );
+
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(!args.iter().any(|arg| arg == "--hairpin"));
+        assert!(args.iter().any(|arg| arg == "--otp"));
+        assert!(args.iter().any(|arg| arg == "123456"));
     }
 
     #[test]

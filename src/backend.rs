@@ -787,6 +787,34 @@ pub fn login_with_progress(
     result
 }
 
+pub(crate) fn login_with_progress_hairpin(
+    config: &Config,
+    account: Account,
+    otp: String,
+    via: Option<crate::pol_less::Plan>,
+    hairpin: bool,
+    clicked: std::time::Instant,
+    progress: impl FnMut(&str),
+) -> Result<LaunchResult, String> {
+    let label = account.label.clone();
+    let history = config.history_path();
+    let result = login_inner_with_hairpin(
+        config,
+        account,
+        otp,
+        via,
+        hairpin,
+        Timeline::begin_at(clicked),
+        progress,
+    );
+    if let Err(error) = &result {
+        let (message, log) = crate::launch_log::split_log(error);
+        let message: String = message.chars().take(240).collect();
+        crate::launch_log::append_history(&history, &label, &message, log.as_deref());
+    }
+    result
+}
+
 fn login_inner(
     config: &Config,
     account: Account,
@@ -800,6 +828,35 @@ fn login_inner(
     match account.mode {
         AccountMode::Private => {
             crate::private_server::launch(config, account, otp, timing, &mut progress)
+        }
+        AccountMode::Retail => {
+            let plan = via.ok_or_else(|| t("The native client is temporarily unavailable. Retail accounts must launch through Windower or Ashita; saved private-server accounts are kept.").to_owned())?;
+            crate::pol_less::launch(config, &plan, account, otp, timing, &mut progress)
+        }
+    }
+}
+
+fn login_inner_with_hairpin(
+    config: &Config,
+    account: Account,
+    otp: String,
+    via: Option<crate::pol_less::Plan>,
+    hairpin: bool,
+    timing: Timeline,
+    mut progress: impl FnMut(&str),
+) -> Result<LaunchResult, String> {
+    validate_account(&account)?;
+    let otp = Zeroizing::new(otp);
+    match account.mode {
+        AccountMode::Private => {
+            crate::private_server::launch_with_hairpin(
+                config,
+                account,
+                otp,
+                hairpin,
+                timing,
+                &mut progress,
+            )
         }
         AccountMode::Retail => {
             let plan = via.ok_or_else(|| t("The native client is temporarily unavailable. Retail accounts must launch through Windower or Ashita; saved private-server accounts are kept.").to_owned())?;
