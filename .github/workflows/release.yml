@@ -25,7 +25,7 @@ jobs:
     name: Build, sign and publish
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check the tag, version and signing setup
         id: version
@@ -47,6 +47,14 @@ jobs:
           }
           "version=$version" >> $env:GITHUB_OUTPUT
           "prerelease=$([bool]($version -match '-'))".ToLower() >> $env:GITHUB_OUTPUT
+
+      - name: Use a temp folder without 8.3 short names
+        # The runner's TEMP is C:\Users\RUNNER~1\..., which install-folder tests compare against
+        # the long path Crystal saves
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
 
       - uses: dtolnay/rust-toolchain@stable
         with:

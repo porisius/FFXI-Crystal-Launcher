@@ -86,27 +86,6 @@ fn xiloader_argument_string(
     pol_less::command_arguments(&command)
 }
 
-pub(crate) fn launch(
-    config: &Config,
-    account: Account,
-    otp: zeroize::Zeroizing<String>,
-    timing: Timeline,
-    progress: impl FnMut(&str),
-) -> Result<LaunchResult, String> {
-    launch_with_plan(config, account, otp, None, true, timing, progress)
-}
-
-pub(crate) fn launch_with_hairpin(
-    config: &Config,
-    account: Account,
-    otp: zeroize::Zeroizing<String>,
-    hairpin: bool,
-    timing: Timeline,
-    progress: impl FnMut(&str),
-) -> Result<LaunchResult, String> {
-    launch_with_plan(config, account, otp, None, hairpin, timing, progress)
-}
-
 pub(crate) fn launch_with_plan(
     config: &Config,
     account: Account,
