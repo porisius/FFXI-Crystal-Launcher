@@ -481,10 +481,41 @@ pub(crate) fn prepare(
     Ok(Prepared { loader, options: LoaderOptions { fingerprint, ports }, notes, details })
 }
 
-// ---- where servers are kept ----
+// ---- update hold ----
 
 fn private_servers(experiment: &Path) -> PathBuf {
     experiment.join("iced-launcher").join("private-servers")
+}
+
+/// Why FFXI shouldn't be updated for `server`, from its last manifest read: `Some` while the
+/// server has not approved the new client yet.
+pub(crate) fn update_hold(config: &Config, server: &str) -> Option<String> {
+    let url = manifest_url(server)?;
+    let host = url.host_str()?;
+    let bytes = fs::read(private_servers(&config.experiment).join(host).join(MANIFEST_NAME)).ok()?;
+    let client = parse(&bytes).ok()?.client?;
+    (!client.update_approved).then(|| {
+        format!(
+            "{host} hasn't approved the new FINAL FANTASY XI client yet (it supports {}), so updating this installation is on hold. Updating now would leave you unable to log in there until the server catches up.",
+            if client.required_version.is_empty() { "the current one".to_owned() } else { client.required_version }
+        )
+    })
+}
+
+/// Reads the manifest again for every server Crystal has launched before, so an update hold set
+/// since then is known. Run at startup, off the interface thread; failures keep the last copy.
+pub(crate) async fn refresh_known(experiment: PathBuf) {
+    let Ok(entries) = fs::read_dir(private_servers(&experiment)) else { return };
+    let Ok(client) = client(Duration::from_secs(8)) else { return };
+    for entry in entries.flatten() {
+        let host = entry.file_name().to_string_lossy().into_owned();
+        let Some(url) = manifest_url(&host) else { continue };
+        if let Ok(bytes) = get_limited(&client, url, MANIFEST_LIMIT).await {
+            if parse(&bytes).is_ok() {
+                let _ = write_replacing(&entry.path().join(MANIFEST_NAME), &bytes);
+            }
+        }
+    }
 }
 
 fn download_loader(
@@ -635,6 +666,27 @@ mod tests {
         // An LSB manifest without verLock (older server build) means the default, 2
         let parsed = parse(br#"{"schemaVersion":1,"client":{"requiredVersion":"30261006_0","comparisonMode":"lsb-month"}}"#).unwrap();
         assert_eq!(parsed.client.unwrap().ver_lock, 2);
+    }
+
+    #[test]
+    fn update_hold_follows_the_cached_manifest() {
+        let experiment = std::env::temp_dir().join(format!("crystal-hold-{}", std::process::id()));
+        let config = Config { experiment: experiment.clone(), ..Config::default() };
+        let dir = private_servers(&experiment).join("ffxi.example.com");
+        fs::create_dir_all(&dir).unwrap();
+        assert!(update_hold(&config, "ffxi.example.com").is_none(), "no manifest yet: no hold");
+
+        fs::write(dir.join(MANIFEST_NAME), br#"{"schemaVersion":1,"client":{"requiredVersion":"30261006_0","updateApproved":false}}"#).unwrap();
+        let hold = update_hold(&config, "FFXI.example.com").unwrap();
+        assert!(hold.contains("ffxi.example.com") && hold.contains("30261006_0"));
+        assert!(update_hold(&config, "other.example.com").is_none());
+        assert!(update_hold(&config, "192.168.2.10").is_none());
+
+        fs::write(dir.join(MANIFEST_NAME), br#"{"schemaVersion":1,"client":{"requiredVersion":"30261006_0","updateApproved":true}}"#).unwrap();
+        assert!(update_hold(&config, "ffxi.example.com").is_none());
+        fs::write(dir.join(MANIFEST_NAME), br#"{"schemaVersion":1,"client":{"requiredVersion":"30261006_0"}}"#).unwrap();
+        assert!(update_hold(&config, "ffxi.example.com").is_none(), "approval defaults to yes");
+        fs::remove_dir_all(&experiment).unwrap();
     }
 
     #[test]

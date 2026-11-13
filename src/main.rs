@@ -1225,7 +1225,13 @@ impl App {
         let launcher = if app.settings.launcher_auto_updates && !matches!(app.self_update, self_update::State::Error(_)) { Effect::done(Message::SelfUpdate(self_update::Msg::Check)) } else { Effect::none() };
         // Start with Windows on: its task still starts this exe (it may have moved).
         let startup = if app.settings.start_with_windows { app.startup_task_busy = true; app.startup_task(None) } else { Effect::none() };
-        (app, Effect::batch([accounts, checks, viewer, launcher, installation, startup, tools, game_config]))
+        // The private servers' manifests read again, so an update hold set since is known.
+        let experiment = app.config.experiment.clone();
+        let manifests = Effect::future(async move {
+            server_manifest::refresh_known(experiment).await;
+            Effect::none()
+        });
+        (app, Effect::batch([accounts, checks, viewer, launcher, installation, startup, tools, game_config, manifests]))
     }
 
     /// What the window's timers and listeners should be after this update, in no toolkit's
@@ -1549,6 +1555,22 @@ impl App {
         if self.preview || self.maintenance.is_some() {
             return Effect::none();
         }
+        // A private server that hasn't approved the new FFXI client holds the game's update in
+        // the folder its accounts play from (lifted on the server's side). PlayOnline's own
+        // update, when one is due, still runs on its own.
+        let mut viewer_only = viewer_only;
+        let mut held = None;
+        if kind == MaintenanceKind::Update && !viewer_only {
+            let target = self.update_account_folder(kind).unwrap_or_else(|| PathBuf::from(&self.settings.install_path));
+            if let Some(hold) = self.update_hold(&target) {
+                if !self.update_scope().0 {
+                    self.status = hold;
+                    return Effect::none();
+                }
+                viewer_only = true;
+                held = Some(hold);
+            }
+        }
         let game_operation = matches!(
             kind,
             MaintenanceKind::Check | MaintenanceKind::Update | MaintenanceKind::Repair
@@ -1627,6 +1649,7 @@ impl App {
         self.maintenance_result.clear();
         self.maintenance_tone = ResultTone::Done;
         self.status = self.maintenance_label().into();
+        if let Some(hold) = held { self.status = format!("{} {hold}", self.status); }
         if game_operation && update_viewer { self.viewer_generation += 1; self.viewer_loading = true; }
         let viewer_generation = self.viewer_generation;
         let previous_viewer_version = self.viewer.as_ref().map(|v| v.version.remote_version.clone())
@@ -2238,6 +2261,17 @@ impl App {
         (!self.settings.install_selected || plain(&folder) != plain(&settings)).then_some(folder)
     }
 
+    /// Why updating the FFXI folder `target` is on hold: a private-server account plays from it
+    /// and its server's last manifest says the new client isn't approved yet.
+    fn update_hold(&self, target: &Path) -> Option<String> {
+        if self.preview { return None; }
+        self.accounts
+            .iter()
+            .filter(|row| row.account.mode == AccountMode::Private)
+            .filter(|row| play_update::same_folder(&self.settings.config_for(&self.config, &row.account).game_directory(), target))
+            .find_map(|row| server_manifest::update_hold(&self.config, &row.account.server))
+    }
+
     /// The game folder an operation of `kind` changes when it is not the Settings one: an
     /// Update the W20 of an account with its own folder asked for updates that folder.
     fn update_account_folder(&self, kind: MaintenanceKind) -> Option<PathBuf> {
@@ -2301,6 +2335,16 @@ impl App {
         if self.preview || self.closing { return false; }
         let Some(row) = self.accounts.iter().find(|row| row.key == key && row.pid.is_some()) else { return false };
         let Some(folder) = self.play_folder(row) else { return false };
+        // A private server's update hold (`update_hold`): the row keeps the refusal and says why.
+        if let Some(hold) = self.update_hold(&folder) {
+            if probe {
+                launch_log::append_history(&self.config.history_path(), "Crystal", &format!("maintenance update: held, {hold}"), None);
+            } else if let Some(row) = self.accounts.iter_mut().find(|row| row.key == key) {
+                row.status = hold;
+                row.problem = true;
+            }
+            return false;
+        }
         let Some(official) = patch::in_session_update(&folder, report) else {
             // A batch account whose own folder is current was refused for another's update.
             let current = !probe && batch && report.state == patch::PatchState::Required && !row.is_playing()

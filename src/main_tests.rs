@@ -2139,6 +2139,32 @@ fn a_private_server_play_starts_by_itself_and_a_sign_in_skips_it() {
     assert_eq!(app.accounts.len(), 3);
 }
 
+/// A private server that hasn't approved the new client holds FFXI's update in the folder its
+/// accounts play from; its approval (the server's manifest) lifts the hold.
+#[test]
+fn a_private_servers_update_hold_stops_the_game_update_in_its_folder() {
+    let mut app = app();
+    app.preview = false;
+    let root = std::env::temp_dir().join(format!("crystal-update-hold-{}", backend::unique_id().unwrap()));
+    app.config.experiment = root.clone();
+    app.settings.install_selected = true;
+    app.settings.install_path = root.join("FFXI").to_string_lossy().into_owned();
+    app.accounts[2].account.mode = AccountMode::Private;
+    app.accounts[2].account.server = "ffxi.example.test".into();
+    let folder = std::path::PathBuf::from(&app.settings.install_path);
+    assert!(app.update_hold(&folder).is_none(), "no manifest read yet: no hold");
+    let dir = root.join("iced-launcher").join("private-servers").join("ffxi.example.test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("manifest.json"), br#"{"schemaVersion":1,"client":{"requiredVersion":"30261006_0","updateApproved":false}}"#).unwrap();
+    let _ = app.start_maintenance(MaintenanceKind::Update);
+    assert!(app.maintenance.is_none());
+    assert!(app.status.contains("ffxi.example.test") && app.status.contains("on hold"), "{}", app.status);
+    assert!(app.update_hold(&root.join("Other FFXI")).is_none(), "another folder is not held");
+    std::fs::write(dir.join("manifest.json"), br#"{"schemaVersion":1,"client":{"requiredVersion":"30261006_0","updateApproved":true}}"#).unwrap();
+    assert!(app.update_hold(&folder).is_none());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn legacy_native_default_loads_as_an_available_retail_launcher() {
     let root = std::env::temp_dir().join(format!("crystal-retail-default-{}", backend::unique_id().unwrap()));
