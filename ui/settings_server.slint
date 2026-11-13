@@ -1,0 +1,222 @@
+// Settings → Server: a LandSandBoat server's admin side (server_admin_page): the admin login,
+// the update gate, maintenance and message, xiloader and the client verification manifest.
+// Its words are English, like the rest of Crystal's private-server text.
+import { Theme } from "theme.slint";
+import { SettingsView, Shade } from "settings_state.slint";
+import { Glyph, Control, Tone, Field, Chip, Bar } from "widgets.slint";
+import { Card, CardTitle, SwitchNotes } from "settings_kit.slint";
+
+/// A muted line that wraps.
+component Detail inherits Text {
+    font-size: Theme.type-detail * Theme.scale;
+    color: Theme.sub;
+    wrap: word-wrap;
+}
+
+/// A heading with its muted line under it.
+component Head inherits VerticalLayout {
+    in property <string> title;
+    in property <string> sub;
+    spacing: 6px * Theme.scale;
+    CardTitle { text: root.title; }
+    if root.sub != "": Detail { text: root.sub; }
+}
+
+export component ServerTab inherits VerticalLayout {
+    private property <float> s: Theme.scale;
+    private property <bool> idle: !SettingsView.server.busy;
+    spacing: 16px * root.s;
+
+    // The server and its admin token.
+    Card {
+        Head {
+            title: "Server admin";
+            sub: "Run your LandSandBoat server's launcher side from here: hold or approve FFXI updates, post a message, publish xiloader and the client verification manifest. Needs the admin token set on the server as launcher.ADMIN_TOKEN.";
+        }
+        HorizontalLayout {
+            spacing: 10px * root.s;
+            Field {
+                horizontal-stretch: 2;
+                height: Theme.control-h * root.s;
+                font-size: Theme.type-body * root.s;
+                pad-x: 11px * root.s;
+                label: "Server";
+                placeholder: "Server, e.g. ffxi.example.com";
+                text <=> SettingsView.server-host;
+                enabled: SettingsView.server.host-editable;
+                edited(value) => { SettingsView.server-host-edited(value); }
+                accepted => { SettingsView.server-connect(); }
+            }
+            Field {
+                horizontal-stretch: 3;
+                height: Theme.control-h * root.s;
+                font-size: Theme.type-body * root.s;
+                pad-x: 11px * root.s;
+                password: true;
+                label: "Admin token";
+                placeholder: SettingsView.server.connected ? "Saved; enter a new token to replace it" : "Admin token (launcher.ADMIN_TOKEN)";
+                text <=> SettingsView.server-token;
+                edited(value) => { SettingsView.server-token-edited(value); }
+                accepted => { SettingsView.server-connect(); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 10px * root.s;
+            Control {
+                scale: root.s;
+                tone: Tone.primary;
+                glyph: Glyph.send;
+                text: SettingsView.server.connected ? "Save and refresh" : "Connect";
+                enabled: root.idle;
+                clicked => { SettingsView.server-connect(); }
+            }
+            Control {
+                scale: root.s;
+                glyph: Glyph.refresh;
+                text: "Refresh";
+                enabled: root.idle && SettingsView.server.connected;
+                clicked => { SettingsView.server-refresh(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Control {
+                scale: root.s;
+                tone: Tone.danger-link;
+                glyph: Glyph.trash;
+                text: "Forget this server";
+                enabled: SettingsView.server.connected;
+                clicked => { SettingsView.server-forget(); }
+            }
+        }
+        if SettingsView.server.error != "": Detail { text: SettingsView.server.error; color: SettingsView.shade(Shade.warn); }
+        if SettingsView.server.notice != "": Detail { text: SettingsView.server.notice; color: SettingsView.shade(Shade.ok); }
+        if SettingsView.server.busy && !SettingsView.server.has-status: Detail { text: "Connecting…"; }
+        if SettingsView.server.has-status: HorizontalLayout {
+            spacing: 10px * root.s;
+            alignment: start;
+            Chip { scale: root.s; text: SettingsView.server.online; tone: SettingsView.shade(Shade.ok); }
+            Detail { text: SettingsView.server.versions; vertical-alignment: center; }
+        }
+    }
+
+    // Players: FFXI updates, maintenance, the message.
+    if SettingsView.server.has-status: Card {
+        Head { title: "Players"; sub: "Changes reach every launcher on its next check; no restart or reload_settings."; }
+        SwitchNotes {
+            text: "Let players update FINAL FANTASY XI";
+            on: SettingsView.server.approved;
+            enabled: root.idle;
+            note-1: "Turn this off when Square Enix patches and LSB doesn't support the new client yet. Crystal then holds its FFXI update for this server's players. Turn it back on once the server is updated.";
+            toggled(on) => { SettingsView.server-approve(on); }
+        }
+        SwitchNotes {
+            text: "Show the maintenance notice in launchers";
+            on: SettingsView.server.maintenance;
+            enabled: root.idle && !SettingsView.server.maint-locked;
+            note-1: SettingsView.server.maint-locked ? "login.MAINT_MODE is on in the server's settings, so logins are locked and the notice stays on." : "";
+            toggled(on) => { SettingsView.server-maintenance(on); }
+        }
+        HorizontalLayout {
+            spacing: 10px * root.s;
+            Field {
+                horizontal-stretch: 1;
+                height: Theme.control-h * root.s;
+                font-size: Theme.type-body * root.s;
+                pad-x: 11px * root.s;
+                label: "Message";
+                placeholder: "Message shown in launchers (empty for none)";
+                text <=> SettingsView.server-motd;
+                edited(value) => { SettingsView.server-motd-edited(value); }
+                accepted => { SettingsView.server-save-motd(); }
+            }
+            Control {
+                scale: root.s;
+                text: "Save message";
+                enabled: root.idle && SettingsView.server-motd != SettingsView.server.motd-saved;
+                clicked => { SettingsView.server-save-motd(); }
+            }
+        }
+        if SettingsView.server.overridden != "": HorizontalLayout {
+            spacing: 10px * root.s;
+            Detail { text: SettingsView.server.overridden; horizontal-stretch: 1; vertical-alignment: center; }
+            Control {
+                scale: root.s;
+                text: "Use server settings";
+                enabled: root.idle;
+                clicked => { SettingsView.server-clear(); }
+            }
+        }
+    }
+
+    // xiloader: what players get, what the server's daily check staged.
+    if SettingsView.server.has-status: Card {
+        Head { title: "xiloader"; sub: "New releases are staged by the server's daily check; players get one only once it's published."; }
+        Text { text: SettingsView.server.live; font-size: Theme.type-body * root.s; color: Theme.ink; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 10px * root.s;
+            alignment: start;
+            for version[i] in SettingsView.server-staged: Control {
+                scale: root.s;
+                tone: Tone.primary;
+                glyph: Glyph.download;
+                text: "Publish " + version;
+                enabled: SettingsView.server.can-request;
+                clicked => { SettingsView.server-publish(i); }
+            }
+            if SettingsView.server.has-archived: Control {
+                scale: root.s;
+                text: "Roll back";
+                enabled: SettingsView.server.can-request;
+                clicked => { SettingsView.server-rollback(); }
+            }
+            if SettingsView.server-staged.length == 0 && !SettingsView.server.has-archived: Detail { text: "Nothing staged."; vertical-alignment: center; }
+        }
+        if SettingsView.server.pending: Detail {
+            text: "A request is waiting on the server. If it doesn't finish, check that xiloader-request.path is enabled there.";
+            color: SettingsView.shade(Shade.warn);
+        }
+        if SettingsView.server.held != "": Detail { text: SettingsView.server.held; }
+        if SettingsView.server.last-result != "": Detail {
+            text: SettingsView.server.last-result;
+            color: SettingsView.server.last-ok ? Theme.sub : SettingsView.shade(Shade.warn);
+        }
+    }
+
+    // The client verification manifest, built from this PC's FFXI folder.
+    if SettingsView.server.has-status: Card {
+        Head { title: "Client verification"; sub: "Built from this PC's FINAL FANTASY XI folder, which must be patched to exactly the version the server expects."; }
+        HorizontalLayout {
+            spacing: 10px * root.s;
+            alignment: start;
+            Chip {
+                scale: root.s;
+                text: SettingsView.server.verify-chip;
+                tone: SettingsView.shade(SettingsView.server.verify-present ? Shade.ok : Shade.warn);
+            }
+            Detail { text: SettingsView.server.game-folder; vertical-alignment: center; }
+        }
+        if !SettingsView.server.verify-running: HorizontalLayout {
+            alignment: start;
+            Control {
+                scale: root.s;
+                tone: SettingsView.server.verify-present ? Tone.secondary : Tone.primary;
+                glyph: Glyph.file-check;
+                text: SettingsView.server.verify-action;
+                enabled: root.idle;
+                clicked => { SettingsView.server-verify(); }
+            }
+        }
+        if SettingsView.server.verify-running: VerticalLayout {
+            spacing: 8px * root.s;
+            Bar { girth: 6px * root.s; track: Theme.select; fraction: SettingsView.server.verify-fraction; }
+            HorizontalLayout {
+                spacing: 10px * root.s;
+                Detail { text: SettingsView.server.verify-line; color: Theme.accent; horizontal-stretch: 1; vertical-alignment: center; }
+                Control {
+                    scale: root.s;
+                    text: "Stop";
+                    clicked => { SettingsView.server-cancel-verify(); }
+                }
+            }
+        }
+    }
+}

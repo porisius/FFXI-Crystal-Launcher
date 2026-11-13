@@ -151,6 +151,37 @@ export struct SystemState {
     tray: bool,
 }
 
+/// Settings → Server (server_admin_page::Front).
+export struct ServerState {
+    connected: bool,
+    busy: bool,
+    host-editable: bool,
+    error: string,
+    notice: string,
+    has-status: bool,
+    online: string,
+    versions: string,
+    approved: bool,
+    maintenance: bool,
+    maint-locked: bool,
+    motd-saved: string,
+    overridden: string,
+    live: string,
+    can-request: bool,
+    has-archived: bool,
+    pending: bool,
+    held: string,
+    last-result: string,
+    last-ok: bool,
+    verify-present: bool,
+    verify-chip: string,
+    game-folder: string,
+    verify-running: bool,
+    verify-line: string,
+    verify-fraction: float,
+    verify-action: string,
+}
+
 /// One launch tool's folder or file (launch_tools::tool_row).
 export struct ToolRow {
     name: string,
@@ -397,7 +428,7 @@ export struct Draft {
 
 export global SettingsView {
     in property <SettingsStrings> strings;
-    /// settings_page::Tab's order: Graphics, Sound & interface, Controller, System.
+    /// settings_page::Tab's order: Graphics, Sound & interface, Controller, System, Server.
     in property <[string]> tabs;
     in property <int> tab;
     in property <[string]> languages;
@@ -405,6 +436,28 @@ export global SettingsView {
     callback pick-tab(int);
     callback set-privacy(bool);
     callback set-language(int);
+
+    // ---- Server ----
+    in property <ServerState> server;
+    in property <[string]> server-staged;
+    in-out property <string> server-host;
+    in-out property <string> server-token;
+    in-out property <string> server-motd;
+    callback server-host-edited(string);
+    callback server-token-edited(string);
+    callback server-motd-edited(string);
+    callback server-connect();
+    callback server-forget();
+    callback server-refresh();
+    callback server-approve(bool);
+    callback server-maintenance(bool);
+    callback server-save-motd();
+    callback server-clear();
+    /// A `server-staged` row's version.
+    callback server-publish(int);
+    callback server-rollback();
+    callback server-verify();
+    callback server-cancel-verify();
 
     // ---- System ----
     in property <string> version;

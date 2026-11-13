@@ -8,6 +8,7 @@ import { SectionTile, PageTitle, DetailTitle } from "panes.slint";
 import { SystemTab } from "settings_system.slint";
 import { GraphicsTab, GameOptions } from "settings_graphics.slint";
 import { ControllerTab } from "settings_controller.slint";
+import { ServerTab } from "settings_server.slint";
 
 export { SettingsView }
 
@@ -96,6 +97,7 @@ export component SettingsPage inherits Rectangle {
                         if SettingsView.tab == 1: GameOptions { width-hint: page.width - 12px; }
                         if SettingsView.tab == 2: ControllerTab { width-hint: page.width - 12px; }
                         if SettingsView.tab == 3: SystemTab { }
+                        if SettingsView.tab == 4: ServerTab { }
                     }
                 }
                 ScrollThumb {

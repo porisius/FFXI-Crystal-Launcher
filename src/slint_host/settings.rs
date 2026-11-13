@@ -11,7 +11,7 @@
 //! options) are rebuilt only when what they are built from moved.
 use super::{
     Act, Compat, ComponentCard, Components, Dg, Draft, FeatureOff, GcBar, GcCard, GcRow, Glyph, ImportState, MainWindow, PadBinding, PadChoice,
-    PadKey, PadNote, PadState, PadSwitch, Program, Rs, SettingsStrings, SettingsView, Shade, SystemState, ToolRow, ToolsState,
+    PadKey, PadNote, PadState, PadSwitch, Program, Rs, ServerState, SettingsStrings, SettingsView, Shade, SystemState, ToolRow, ToolsState,
 };
 use crate::game_config::front as gcf;
 use crate::gamepad::front as gp;
@@ -28,7 +28,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 /// settings_page::Tab's order.
-const TABS: [Tab; 4] = [Tab::Graphics, Tab::Sound, Tab::Controller, Tab::System];
+const TABS: [Tab; 5] = [Tab::Graphics, Tab::Sound, Tab::Controller, Tab::System, Tab::Server];
 /// The import dialog's regions, as its buttons name them.
 const REGIONS: [&str; 3] = ["US", "EU", "JP"];
 
@@ -82,6 +82,9 @@ struct State {
     import_warnings: Rc<VecModel<SharedString>>,
     import_drafts: Rc<VecModel<Draft>>,
     drafts: Vec<(String, String, Vec<String>)>,
+    /// Settings → Server's staged xiloader versions, as its Publish buttons name them.
+    server_staged: Rc<VecModel<SharedString>>,
+    staged_values: Vec<String>,
 }
 
 impl State {
@@ -89,6 +92,8 @@ impl State {
         Self {
             lang: None,
             tabs: Rc::new(VecModel::default()),
+            server_staged: Rc::new(VecModel::default()),
+            staged_values: Vec::new(),
             languages: Rc::new(VecModel::default()),
             launchers: Rc::new(VecModel::default()),
             boot_items: Rc::new(VecModel::default()),
@@ -169,6 +174,7 @@ pub(super) fn wire(ui: &MainWindow) {
     let state = State::new();
     let view = ui.global::<SettingsView>();
     view.set_tabs(ModelRc::from(state.tabs.clone()));
+    view.set_server_staged(ModelRc::from(state.server_staged.clone()));
     view.set_languages(ModelRc::from(state.languages.clone()));
     view.set_launchers(ModelRc::from(state.launchers.clone()));
     view.set_boot_items(ModelRc::from(state.boot_items.clone()));
@@ -197,6 +203,24 @@ pub(super) fn wire(ui: &MainWindow) {
     view.on_pick_tab(|i| { if let Some(tab) = index(i).and_then(|i| TABS.get(i)) { emit(Message::SettingsTab(*tab)); } });
     view.on_set_privacy(|on| emit(Message::SetPrivacy(on)));
     view.on_set_language(|i| { if let Some(lang) = index(i).and_then(|i| Lang::ALL.get(i)) { emit(Message::SetLanguage(*lang)); } });
+
+    // ---- Server ----
+    use crate::server_admin_page::Msg as Server;
+    let server = |msg: Server| emit(Message::ServerAdmin(msg));
+    view.on_server_host_edited(move |value| server(Server::HostInput(value.into())));
+    view.on_server_token_edited(move |value| server(Server::TokenInput(value.into())));
+    view.on_server_motd_edited(move |value| server(Server::MotdInput(value.into())));
+    view.on_server_connect(move || server(Server::Connect));
+    view.on_server_forget(move || server(Server::Forget));
+    view.on_server_refresh(move || server(Server::Refresh));
+    view.on_server_approve(move |on| server(Server::SetUpdateApproved(on)));
+    view.on_server_maintenance(move |on| server(Server::SetMaintenance(on)));
+    view.on_server_save_motd(move || server(Server::SaveMotd));
+    view.on_server_clear(move || server(Server::ClearOverrides));
+    view.on_server_publish(|i| act(|s| s.staged_values.get(index(i)?).map(|version| Message::ServerAdmin(Server::Xiloader("promote", Some(version.clone()))))));
+    view.on_server_rollback(move || server(Server::Xiloader("rollback", None)));
+    view.on_server_verify(move || server(Server::GenerateVerify));
+    view.on_server_cancel_verify(move || server(Server::CancelVerify));
 
     // ---- System ----
     view.on_update_action(|| act(|s| s.update_action.map(|action| Message::SelfUpdate(action.msg()))));
@@ -412,7 +436,8 @@ pub(super) fn sync(ui: &MainWindow, app: &App) {
         if state.lang != Some(lang) {
             state.lang = Some(lang);
             put!(view, get_strings, set_strings, strings());
-            strings_model(&state.tabs, [t("Graphics"), t("Sound & interface"), t("Controller"), t("System")].map(str::to_owned));
+            // Server is English, like the rest of Crystal's private-server text.
+            strings_model(&state.tabs, [t("Graphics"), t("Sound & interface"), t("Controller"), t("System"), "Server"].map(str::to_owned));
             strings_model(&state.languages, Lang::ALL.iter().map(ToString::to_string));
             strings_model(&state.launchers, LaunchWith::ALL.iter().map(ToString::to_string));
             // Worded lists follow the language on the next sync.
@@ -561,7 +586,50 @@ fn page(view: &SettingsView, app: &App, state: &mut State) {
             components(view, app, state);
         }
         Tab::Controller => controller(view, app, state),
+        Tab::Server => server(view, app, state),
     }
+}
+
+/// Settings → Server (`server_admin_page::front`).
+fn server(view: &SettingsView, app: &App, state: &mut State) {
+    let front = crate::server_admin_page::front(app);
+    let admin = &app.server_admin;
+    put!(view, get_server, set_server, ServerState {
+        connected: front.connected,
+        busy: front.busy,
+        host_editable: crate::privacy::editable(),
+        error: crate::privacy::mask(&front.error).into(),
+        notice: front.notice.into(),
+        has_status: front.has_status,
+        online: front.online.into(),
+        versions: front.versions.into(),
+        approved: front.approved,
+        maintenance: front.maintenance,
+        maint_locked: front.maint_locked,
+        motd_saved: front.motd_saved.into(),
+        overridden: front.overridden.into(),
+        live: front.live.into(),
+        can_request: front.can_request,
+        has_archived: front.has_archived,
+        pending: front.pending,
+        held: front.held.into(),
+        last_result: front.last_result.into(),
+        last_ok: front.last_ok,
+        verify_present: front.verify_present,
+        verify_chip: front.verify_chip.into(),
+        game_folder: front.game_folder.into(),
+        verify_running: front.verify_running,
+        verify_line: front.verify_line.into(),
+        verify_fraction: front.verify_fraction,
+        verify_action: front.verify_action.into(),
+    });
+    if state.staged_values != front.staged {
+        strings_model(&state.server_staged, front.staged.iter().cloned());
+        state.staged_values = front.staged;
+    }
+    put!(view, get_server_host, set_server_host, crate::privacy::mask(&admin.host).into());
+    put!(view, get_server_token, set_server_token, SharedString::from(admin.token.as_str()));
+    put!(view, get_server_motd, set_server_motd, SharedString::from(admin.motd.as_str()));
 }
 
 /// The header's Privacy mode and language, and System's switches and launcher updates (the
@@ -1232,7 +1300,7 @@ mod tests {
         let ui = window(&app);
         let view = ui.global::<SettingsView>();
         assert_eq!(view.get_tab(), 3);
-        assert_eq!(view.get_tabs().row_count(), 4);
+        assert_eq!(view.get_tabs().row_count(), 5);
         let system = view.get_system();
         assert!(system.sign_in && !system.tray);
         assert_eq!(view.get_strings().title, t("Settings"));
@@ -1258,6 +1326,44 @@ mod tests {
         assert!(matches!(messages[5], Message::OpenWithGame(crate::open_with_game::Msg::Enabled(0, false))));
         assert!(matches!(messages[6], Message::OpenWithGame(crate::open_with_game::Msg::Add)));
         assert!(matches!(messages[7], Message::SetLanguage(Lang::Ja)));
+    }
+
+    /// Settings → Server shows the server's state once connected, and its buttons send their
+    /// messages (a Publish button names its staged version).
+    #[test]
+    fn the_server_tab_shows_the_servers_state_and_its_controls_send_their_messages() {
+        let mut app = settings_app(Tab::Server);
+        app.server_admin.login = Some(crate::server_admin::Login { host: "ffxi.example.test".into(), token: "x".repeat(32) });
+        app.server_admin.host = "ffxi.example.test".into();
+        app.server_admin.motd = "Patch day".into();
+        app.server_admin.status = Some(serde_json::from_str(r#"{
+            "playersOnline": 3, "clientVersion": "30261006_0", "lsbCommit": "131cf71ed6",
+            "gate": {"updateApproved": true, "maintenance": false, "motd": "Patch day"},
+            "xiloader": {"live": {"version": "3.0.0", "sha256": "68A1DE4112046AFF"}, "staged": ["3.0.1", "3.0.2"], "archived": ["2.2.0"]},
+            "verify": {"currentPresent": true}
+        }"#).unwrap());
+        let ui = window(&app);
+        let view = ui.global::<SettingsView>();
+        assert_eq!(view.get_tab(), 4);
+        assert_eq!(view.get_tabs().row_data(4).unwrap(), "Server");
+        let server = view.get_server();
+        assert!(server.connected && server.has_status && server.approved && !server.maintenance);
+        assert_eq!(server.online, "3 online");
+        assert_eq!(server.verify_chip, "30261006_0 ready");
+        assert_eq!(view.get_server_host(), "ffxi.example.test");
+        assert_eq!(view.get_server_motd(), "Patch day");
+        assert_eq!(view.get_server_staged().row_count(), 2);
+        sent();
+        view.invoke_server_publish(1);
+        view.invoke_server_approve(false);
+        view.invoke_server_rollback();
+        view.invoke_server_verify();
+        let messages = sent();
+        use crate::server_admin_page::Msg as Server;
+        assert!(matches!(&messages[0], Message::ServerAdmin(Server::Xiloader("promote", Some(version))) if version == "3.0.2"));
+        assert!(matches!(messages[1], Message::ServerAdmin(Server::SetUpdateApproved(false))));
+        assert!(matches!(messages[2], Message::ServerAdmin(Server::Xiloader("rollback", None))));
+        assert!(matches!(messages[3], Message::ServerAdmin(Server::GenerateVerify)));
     }
 
     #[test]

@@ -8,10 +8,12 @@ pub(crate) enum Tab {
     Sound,
     Controller,
     System,
+    /// A LandSandBoat server's admin side (`server_admin_page`).
+    Server,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Graphics, Tab::Sound, Tab::Controller, Tab::System];
+    const ALL: [Tab; 5] = [Tab::Graphics, Tab::Sound, Tab::Controller, Tab::System, Tab::Server];
     /// The suffix used by `--preview-settings-<flag>` and the preview filename.
     pub(crate) fn flag(self) -> &'static str {
         match self {
@@ -19,6 +21,7 @@ impl Tab {
             Tab::Sound => "sound",
             Tab::Controller => "controller",
             Tab::System => "system",
+            Tab::Server => "server",
         }
     }
     pub(crate) fn from_flag(flag: &str) -> Option<Tab> {

@@ -352,7 +352,7 @@ fn server_directory(config: &Config, host: &str) -> PathBuf {
 
 /// The FFXI version this folder has applied (its `patch.ver`, as Maintenance shows it), or
 /// "" when it can't be read: an unknown version never stops a launch.
-fn installed_version(game: &Path) -> String {
+pub(crate) fn installed_version(game: &Path) -> String {
     let version = crate::patch::local_report(game).local_version;
     looks_like_version(&version).then_some(version).unwrap_or_default()
 }

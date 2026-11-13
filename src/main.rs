@@ -54,6 +54,8 @@ mod private_server;
 mod retail_region;
 mod services;
 mod self_update;
+mod server_admin;
+mod server_admin_page;
 mod server_manifest;
 mod session_worker;
 mod launcher_change;
@@ -652,6 +654,7 @@ pub(crate) enum Message {
     ControllerPlay,
     ControllerNavigation(bool),
     SelfUpdate(self_update::Msg),
+    ServerAdmin(server_admin_page::Msg),
     WindowResized(Size),
     MinimizeWindow,
     MaximizeWindow,
@@ -1012,6 +1015,8 @@ pub(crate) struct App {
     pub dgvoodoo: dgvoodoo::State,
     pub reshade: reshade::State,
     pub self_update: self_update::State,
+    /// Settings → Server: a LandSandBoat server's admin side.
+    pub(crate) server_admin: server_admin_page::State,
     /// The automatic restart that installs a downloaded update (`self_update::auto`).
     pub(crate) auto_restart: self_update::auto::AutoRestart,
     pub controller_nav: controller_nav::State,
@@ -1155,6 +1160,7 @@ impl App {
             dgvoodoo,
             reshade: reshade::State::default(),
             self_update: self_update::State::default(),
+            server_admin: server_admin_page::State::default(),
             auto_restart: self_update::auto::AutoRestart::default(),
             controller_nav: controller_nav::State::default(),
             features: None,
@@ -1250,6 +1256,7 @@ impl App {
             || self.friends.pending.is_some()
             || !self.held_plays.is_empty()
             || !self.play_updates.jobs.is_empty()
+            || self.server_admin.busy()
             || self.accounts.iter().any(|a| a.busy || a.batch_pending);
         let tick = Duration::from_millis(if busy { 100 } else { 1000 });
         // Ticks that would change nothing are not sent (each message redraws the window).
@@ -4974,6 +4981,7 @@ impl App {
             // new version reconnects to them at start (`session_worker::find`); accounts with no
             // session sign in through the normal startup sign-in. Parked hosts close first.
             Message::SelfUpdate(self_update::Msg::Applied(Ok(()))) => { self.close_parks(); tray::set_icon(false); tray::wake_ui_thread_soon(); return Effect::Exit; }
+            Message::ServerAdmin(msg) => return server_admin_page::update(self, msg),
             Message::SelfUpdate(msg) => {
                 if !self.preview {
                     let can_restart = self.self_update_can_restart(&msg);
@@ -5218,6 +5226,7 @@ impl App {
             Message::SettingsTab(tab) => {
                 self.settings_tab = tab;
                 if tab == settings_page::Tab::Graphics { return reshade::update(self, reshade::Msg::Refresh); }
+                if tab == settings_page::Tab::Server { return server_admin_page::update(self, server_admin_page::Msg::Opened); }
             }
             // open a Settings tab from elsewhere (the components banner).
             Message::OpenSettingsTab(tab) => {
@@ -5445,6 +5454,9 @@ impl App {
                 if page == Page::Friends { self.load_friends(); }
                 if page == Page::Settings && self.settings_tab == settings_page::Tab::Graphics {
                     return reshade::update(self, reshade::Msg::Refresh);
+                }
+                if page == Page::Settings && self.settings_tab == settings_page::Tab::Server {
+                    return server_admin_page::update(self, server_admin_page::Msg::Opened);
                 }
                 if page == Page::Maintenance && !self.settings.install_selected {
                     return self.find_installation(true);
