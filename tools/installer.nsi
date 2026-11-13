@@ -585,7 +585,7 @@ Section "Crystal Launcher"
   !insertmacro StageReg Str "DisplayIcon" "$INSTDIR\Crystal-Launcher.exe"
   !insertmacro StageReg Str "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
   !insertmacro StageReg Str "QuietUninstallString" '$\"$INSTDIR\Uninstall.exe$\" /S'
-  !insertmacro StageReg Str "URLInfoAbout" "https://github.com/Offset437/FFXI-Crystal-Launcher"
+  !insertmacro StageReg Str "URLInfoAbout" "https://github.com/porisius/FFXI-Crystal-Launcher"
   !insertmacro StageReg DWORD "NoModify" 1
   !insertmacro StageReg DWORD "NoRepair" 1
 

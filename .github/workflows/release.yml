@@ -1,0 +1,127 @@
+# Publishes a signed release when a version tag is pushed:
+#   1. set the version in Cargo.toml, commit
+#   2. git tag v1.2.3 && git push origin v1.2.3
+# Needs the CRYSTAL_UPDATE_KEY secret and the matching assets/update-public-key.hex
+# (docs/RELEASING.md). Installed launchers find the release and update themselves.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CRYSTAL_RELEASE_REPO: ${{ github.repository }}
+
+jobs:
+  release:
+    name: Build, sign and publish
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the tag, version and signing setup
+        id: version
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+          HAS_KEY: ${{ secrets.CRYSTAL_UPDATE_KEY != '' }}
+        run: |
+          $cargo = Get-Content Cargo.toml -Raw
+          $version = [regex]::Match($cargo, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          if ("v$version" -cne $env:TAG) {
+            throw "Tag $env:TAG doesn't match Cargo.toml version $version. Set the version, commit, then tag v$version."
+          }
+          if ((Get-Content assets/update-public-key.hex -Raw).Trim() -match '^0{64}$') {
+            throw 'assets/update-public-key.hex is not set. See docs/RELEASING.md.'
+          }
+          if ($env:HAS_KEY -ne 'true') {
+            throw 'The CRYSTAL_UPDATE_KEY secret is missing. See docs/RELEASING.md.'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          # 1.2.7-lsb.1 is a normal release of this fork; any other suffix is a pre-release
+          "prerelease=$([bool]($version -match '-' -and $version -notmatch '^\d+\.\d+\.\d+-lsb\.\d+$'))".ToLower() >> $env:GITHUB_OUTPUT
+
+      - name: Use a temp folder without 8.3 short names
+        # The runner's TEMP is C:\Users\RUNNER~1\..., which install-folder tests compare against
+        # the long path Crystal saves
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crystal-loader -> target
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Find the NSIS installer compiler
+        id: nsis
+        shell: pwsh
+        run: |
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $makensis) {
+            $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+            if (-not (Test-Path $makensis)) {
+              choco install nsis -y --no-progress
+              if ($LASTEXITCODE -ne 0) { throw 'Could not install NSIS.' }
+            }
+          }
+          "path=$makensis" >> $env:GITHUB_OUTPUT
+
+      - name: Build the launcher and installer
+        shell: pwsh
+        env:
+          MAKENSIS: ${{ steps.nsis.outputs.path }}
+        run: ./tools/build-release.ps1 -OutputPath "$env:RUNNER_TEMP\package\Crystal-Launcher.exe" -InstallerCompiler $env:MAKENSIS
+
+      - name: Sign the update package
+        shell: pwsh
+        env:
+          CRYSTAL_UPDATE_KEY: ${{ secrets.CRYSTAL_UPDATE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $key = Join-Path $env:RUNNER_TEMP 'update-key.pk8'
+          try {
+            [IO.File]::WriteAllBytes($key, [Convert]::FromBase64String($env:CRYSTAL_UPDATE_KEY))
+            ./tools/sign-launcher-release.ps1 -PackageFolder "$env:RUNNER_TEMP\package" -PrivateKeyPath $key `
+              -Version $env:VERSION -OutputFolder "$env:RUNNER_TEMP\signed" -Repository $env:GITHUB_REPOSITORY
+          } finally {
+            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Publish the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          $files = @(
+            "$env:RUNNER_TEMP\signed\Crystal-Launcher-$env:VERSION.zip",
+            "$env:RUNNER_TEMP\signed\launcher-update.json",
+            "$env:RUNNER_TEMP\package\Crystal-Launcher-$env:VERSION-Setup.exe"
+          )
+          foreach ($file in $files) { if (-not (Test-Path -LiteralPath $file)) { throw "Missing $file" } }
+          $sums = Join-Path $env:RUNNER_TEMP 'SHA256SUMS.txt'
+          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash.ToLower(), (Split-Path -Leaf $_) } |
+            Set-Content -LiteralPath $sums -Encoding ascii
+          $flags = @('--title', "Crystal Launcher $env:VERSION", '--generate-notes')
+          if ($env:PRERELEASE -eq 'true') { $flags += '--prerelease' }
+          gh release create "v$env:VERSION" @files $sums @flags
+          if ($LASTEXITCODE -ne 0) { throw "Publishing the release failed ($LASTEXITCODE)." }

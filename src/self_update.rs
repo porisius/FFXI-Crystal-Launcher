@@ -25,8 +25,32 @@ use std::{
     time::Duration,
 };
 
-const INDEX: &str = "https://api.github.com/repos/Offset437/FFXI-Crystal-Launcher/releases?per_page=10";
-const RELEASE_PATH: &str = "/Offset437/FFXI-Crystal-Launcher/releases/download/";
+/// The GitHub repository (`owner/name`) Crystal updates itself from. Its releases must be signed
+/// with the private key matching assets/update-public-key.hex (see docs/RELEASING.md). Set
+/// CRYSTAL_RELEASE_REPO when building to publish from another repository.
+const REPO: &str = match option_env!("CRYSTAL_RELEASE_REPO") {
+    Some(repo) => repo,
+    None => "porisius/FFXI-Crystal-Launcher",
+};
+
+fn index_url() -> String {
+    format!("https://api.github.com/repos/{REPO}/releases?per_page=10")
+}
+
+fn release_path() -> String {
+    format!("/{REPO}/releases/download/")
+}
+
+/// This fork numbers its releases `<upstream version>-lsb.<n>` (1.2.7-lsb.1, then 1.2.7-lsb.2
+/// for a fix of its own, 1.2.8-lsb.1 after merging upstream's 1.2.8). Exactly that suffix is a
+/// normal release; any other suffix (1.2.8-lsb.1.beta.1) is a pre-release for testers.
+fn stable(version: &semver::Version) -> bool {
+    let pre = version.pre.as_str();
+    pre.is_empty()
+        || pre
+            .strip_prefix("lsb.")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
 const PUBLIC_KEY: &str = include_str!("../assets/update-public-key.hex");
 const MAX_ARCHIVE: u64 = 256 * 1024 * 1024;
 const MAX_METADATA: usize = 512 * 1024;
@@ -334,6 +358,13 @@ fn trusted_key() -> Result<[u8; 32], String> {
 }
 
 fn asset_url(url: &Url, extension: &str) -> bool {
+    // GitHub may spell the owner or name with other capitals than REPO
+    let prefix = release_path();
+    let path = url.path();
+    let rest = (path.len() > prefix.len()
+        && path.is_char_boundary(prefix.len())
+        && path[..prefix.len()].eq_ignore_ascii_case(&prefix))
+    .then(|| &path[prefix.len()..]);
     url.scheme() == "https"
         && url.host_str() == Some("github.com")
         && url.port_or_known_default() == Some(443)
@@ -341,8 +372,8 @@ fn asset_url(url: &Url, extension: &str) -> bool {
         && url.password().is_none()
         && url.query().is_none()
         && url.fragment().is_none()
-        && !url.path().contains('%')
-        && url.path().strip_prefix(RELEASE_PATH).is_some_and(|rest| {
+        && !path.contains('%')
+        && rest.is_some_and(|rest| {
             let parts: Vec<_> = rest.split('/').collect();
             parts.len() == 2
                 && !parts[0].is_empty()
@@ -452,7 +483,7 @@ async fn check() -> Result<Option<Release>, String> {
     let key = trusted_key()?;
     let client = client()?;
     let index = client
-        .get(INDEX)
+        .get(index_url())
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -471,7 +502,7 @@ async fn check() -> Result<Option<Release>, String> {
     let mut candidates = Vec::new();
     // Pre-releases are for testers (builds that are pre-releases themselves); the GitHub API
     // never lists drafts to anonymous callers.
-    let tester = !current_version().pre.is_empty();
+    let tester = !stable(&current_version());
     for release in releases
         .into_iter()
         .filter(|r| offered(r, tester))
@@ -520,7 +551,7 @@ fn newest(
     let mut first_error = None;
     for candidate in candidates {
         match candidate {
-            Ok(release) if current.pre.is_empty() && !release.version.pre.is_empty() => {}
+            Ok(release) if stable(current) && !stable(&release.version) => {}
             Ok(release) => {
                 if newest.as_ref().is_none_or(|r| release.version > r.version) {
                     newest = Some(release);
@@ -897,7 +928,7 @@ pub(crate) mod tests {
     fn signed(version: &str) -> (Vec<u8>, [u8; 32]) {
         let key = signature::Ed25519KeyPair::from_seed_unchecked(&[17; 32]).unwrap();
         let payload = Payload { format: 1, platform: "windows-x86_64".into(), version: version.into(),
-            url: "https://github.com/Offset437/FFXI-Crystal-Launcher/releases/download/v0.2.0/Crystal-Launcher.zip".into(),
+            url: format!("https://github.com/{REPO}/releases/download/v0.2.0/Crystal-Launcher.zip"),
             size: 400, sha256: "ab".repeat(32) };
         let payload = serde_json::to_string(&payload).unwrap();
         let envelope = Envelope {
@@ -920,7 +951,7 @@ pub(crate) mod tests {
     fn staged_download(data: &Path, name: &str, version: &str, archive: &[u8]) -> ([u8; 32], PathBuf) {
         let key = signature::Ed25519KeyPair::from_seed_unchecked(&[17; 32]).unwrap();
         let payload = Payload { format: 1, platform: "windows-x86_64".into(), version: version.into(),
-            url: "https://github.com/Offset437/FFXI-Crystal-Launcher/releases/download/v9/Crystal-Launcher.zip".into(),
+            url: format!("https://github.com/{REPO}/releases/download/v9/Crystal-Launcher.zip"),
             size: archive.len() as u64, sha256: sha256_hex(archive) };
         let payload = serde_json::to_string(&payload).unwrap();
         let envelope = Envelope { signature: hex(key.sign(payload.as_bytes()).as_ref()), payload };
@@ -1057,6 +1088,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn lsb_numbered_releases_are_stable_and_ordered() {
+        let v = |text: &str| semver::Version::parse(text).unwrap();
+        assert!(stable(&v("1.2.7")) && stable(&v("1.2.7-lsb.1")) && stable(&v("1.2.7-lsb.12")));
+        assert!(!stable(&v("1.2.8-lsb.1.beta.1")) && !stable(&v("1.2.8-beta.1")) && !stable(&v("1.2.8-lsb")));
+        // The fork's sequence, oldest first, including the 1.1.1 friends have now
+        let order = ["1.1.1", "1.2.7-lsb.1", "1.2.7-lsb.2", "1.2.7-lsb.10", "1.2.8-lsb.1"].map(v);
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
+        // A -lsb install takes the next -lsb release, but not a beta
+        let current = v("1.2.7-lsb.1");
+        let picked = newest(vec![Ok(release("1.2.8-lsb.1.beta.1")), Ok(release("1.2.7-lsb.2"))], &current)
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked.payload.version, "1.2.7-lsb.2");
+    }
+
+    #[test]
     fn stable_builds_skip_signed_pre_release_versions() {
         let stable = semver::Version::parse("0.2.0").unwrap();
         let picked = newest(vec![Ok(release("0.3.0-beta.1")), Ok(release("0.2.1"))], &stable)
@@ -1154,11 +1201,14 @@ pub(crate) mod tests {
 
     #[test]
     fn only_crystals_https_release_assets_are_accepted() {
-        let good = "https://github.com/Offset437/FFXI-Crystal-Launcher/releases/download/v1/Crystal-Launcher.zip";
+        let good = format!("https://github.com/{REPO}/releases/download/v1/Crystal-Launcher.zip");
+        let good = good.as_str();
+        assert!(asset_url(&Url::parse(&good.to_ascii_lowercase()).unwrap(), ".zip"), "GitHub may change the capitals");
         assert!(asset_url(&Url::parse(good).unwrap(), ".zip"));
         for bad in [
             good.replace("https:", "http:"),
-            good.replace("Offset437", "someone"),
+            good.replace(REPO, "someone/Crystal-Launcher"),
+            good.replace(REPO, "Offset437/FFXI-Crystal-Launcher"),
             format!("{good}?target=other"),
             good.replace("github.com", "github.com.evil.example"),
             good.replace("/v1/", "/%2e%2e/"),

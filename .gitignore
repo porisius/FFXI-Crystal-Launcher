@@ -13,3 +13,5 @@ __pycache__/
 *.pyc
 /THIRD_PARTY_LICENSES.txt
 docs/downloader-design.md
+# Release signing keys never go in the repository
+*.pk8

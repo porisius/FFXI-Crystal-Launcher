@@ -5,6 +5,8 @@ param(
     [Parameter(Mandatory)][string]$PrivateKeyPath,
     [Parameter(Mandatory)][string]$Version,
     [Parameter(Mandatory)][string]$OutputFolder,
+    # The GitHub repository releases are published to; must match the one built into the launcher
+    [string]$Repository = $(if ($env:CRYSTAL_RELEASE_REPO) { $env:CRYSTAL_RELEASE_REPO } else { 'porisius/FFXI-Crystal-Launcher' }),
     [switch]$Offline
 )
 $ErrorActionPreference = 'Stop'
@@ -16,7 +18,7 @@ if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "No packaged
 $manifest = Join-Path (Split-Path -Parent $PSScriptRoot) 'Cargo.toml'
 [string[]]$offlineArgs = @()
 if ($Offline) { $offlineArgs = @('--offline') }
-$url = "https://github.com/Offset437/FFXI-Crystal-Launcher/releases/download/v$Version/Crystal-Launcher-$Version.zip"
+$url = "https://github.com/$Repository/releases/download/v$Version/Crystal-Launcher-$Version.zip"
 # The delivered launcher asks for administrator rights. Signing needs none;
 # use the ordinary source build's early, headless command instead.
 cargo run --locked --manifest-path $manifest @offlineArgs -- --sign-launcher-release $privateKey $Version $package $url $output

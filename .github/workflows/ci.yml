@@ -1,0 +1,68 @@
+# Builds and tests every push and pull request on Windows, and keeps an unsigned build of the
+# launcher as a download for testing.
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The repository the launcher updates itself from (src/self_update.rs)
+  CRYSTAL_RELEASE_REPO: ${{ github.repository }}
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use a temp folder without 8.3 short names
+        # The runner's TEMP is C:\Users\RUNNER~1\..., which install-folder tests compare against
+        # the long path Crystal saves
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crystal-loader -> target
+            crates/pol-auth -> target
+
+      - name: Test the launcher
+        run: cargo test --locked
+
+      - name: Test the 32-bit game host
+        working-directory: crystal-loader
+        run: cargo test --locked --target i686-pc-windows-msvc
+
+      - name: Test PlayOnline sign-in
+        working-directory: crates/pol-auth
+        run: cargo test --locked
+
+      - name: Build the launcher as released (unsigned)
+        shell: pwsh
+        run: ./tools/build-release.ps1 -OutputPath "$env:RUNNER_TEMP\package\Crystal-Launcher.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Crystal-Launcher-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/package/
+          retention-days: 14
