@@ -73,6 +73,7 @@ struct State {
     news_tabs: Rc<VecModel<SharedString>>,
     launch_items: Rc<VecModel<SharedString>>,
     launch_choices: Rc<VecModel<SharedString>>,
+    private_launch_choices: Rc<VecModel<SharedString>>,
     tool_items: Rc<VecModel<SharedString>>,
     slot_items: Rc<VecModel<SharedString>>,
     /// News pictures by `NewsImage::id`, pruned to the ones shown.
@@ -104,6 +105,7 @@ impl State {
             news_tabs: Rc::new(VecModel::default()),
             launch_items: Rc::new(VecModel::default()),
             launch_choices: Rc::new(VecModel::default()),
+            private_launch_choices: Rc::new(VecModel::default()),
             tool_items: Rc::new(VecModel::default()),
             slot_items: Rc::new(VecModel::default()),
             images: HashMap::new(),
@@ -145,6 +147,7 @@ pub(super) fn wire(ui: &MainWindow) {
     view.set_news_tabs(ModelRc::from(state.news_tabs.clone()));
     view.set_launch_items(ModelRc::from(state.launch_items.clone()));
     view.set_launch_choices(ModelRc::from(state.launch_choices.clone()));
+    view.set_private_launch_choices(ModelRc::from(state.private_launch_choices.clone()));
     view.set_tool_items(ModelRc::from(state.tool_items.clone()));
     view.set_slot_items(ModelRc::from(state.slot_items.clone()));
     view.set_ah_servers(ModelRc::new(VecModel::from(AH_SERVERS.iter().map(|(s, _)| SharedString::from(*s)).collect::<Vec<_>>())));
@@ -219,6 +222,7 @@ pub(super) fn wire(ui: &MainWindow) {
         4 => Message::EditorFlag(EditorFlag::ChangePassword, true),
         5 => Message::EditorFlag(EditorFlag::ShowTotpKey, !s.flags.show_totp_key),
         6 => Message::EditorFlag(EditorFlag::ChangeTotpKey, true),
+        7 => Message::EditorFlag(EditorFlag::NoHairpin, on),
         _ => return None,
     })));
     view.on_sheet_auto_login(|on| send(Message::EditorAutoLogin(on)));
@@ -264,6 +268,8 @@ pub(super) fn sync(ui: &MainWindow, app: &App) {
             strings_model(&state.news_tabs, NEWS_TABS.iter().map(|tab| tab_label(*tab).to_owned()));
             strings_model(&state.launch_items, LaunchWith::ALL.iter().map(ToString::to_string));
             strings_model(&state.launch_choices, [t("Use default"), "Windower", "Ashita", t("Vanilla")].map(str::to_owned));
+            // EDITOR_LAUNCH's first three: no choice is xiloader on its own.
+            strings_model(&state.private_launch_choices, ["xiloader", "Windower", "Ashita"].map(str::to_owned));
             strings_model(&state.slot_items, (1u8..=16).map(|number| tf("Slot {number}", &[("number", &number)])));
             put!(view, get_serif_greeting, set_serif_greeting, lang != Lang::Ja);
             // The sky's day and moon in the new language.
@@ -358,7 +364,9 @@ fn sheet_strings() -> SheetStrings {
         after_adding: t("After adding").to_uppercase().into(),
         display_name: t("Display name").into(),
         display_placeholder: t("How it appears in Crystal, e.g. Mule").into(),
-        private_note: t("Private server · client temporarily unavailable.").into(),
+        private_note: "Private server: logs in through xiloader. When the server publishes a launcher manifest, Crystal uses its xiloader, ports and key.".into(),
+        hairpin: "Use hairpin (--hairpin)".into(),
+        hairpin_note: "The game connects to the server name entered above instead of the address the server reports (often its public one), which is what a server on your own network needs. Turn it off for a server whose zones run on other hosts than its login.".into(),
         server: t("Server").into(),
         server_placeholder: t("Server hostname").into(),
         show: t("Show").into(),
@@ -1185,33 +1193,49 @@ fn sheet(view: &View, app: &App, state: &mut State) {
 
     // Launch.
     let default = app.settings.launch_with;
-    let launch_index = EDITOR_LAUNCH
-        .iter()
-        .position(|value| *value == account.launch_with.filter(|tool| *tool != LaunchWith::Native))
-        .unwrap_or(0) as i32;
-    let launch_hint = match account.launch_with {
+    let launch_index = if retail {
+        EDITOR_LAUNCH
+            .iter()
+            .position(|value| *value == account.launch_with.filter(|tool| *tool != LaunchWith::Native))
+            .unwrap_or(0) as i32
+    } else {
+        // xiloader, Windower, Ashita (`private-launch-choices`).
+        match account.launch_with { Some(LaunchWith::Windower) => 1, Some(LaunchWith::Ashita) => 2, _ => 0 }
+    };
+    let launch_hint: String = if !retail {
+        match account.effective_launch_with(default) {
+            LaunchWith::Windower => "Windower starts xiloader and loads into it, with the profile below.".into(),
+            LaunchWith::Ashita => "Ashita starts xiloader and loads into it, with the boot config below.".into(),
+            _ => "Runs xiloader on its own, without Windower or Ashita.".into(),
+        }
+    } else { match account.launch_with {
         None => tf("Default launcher: {default}.", &[("default", &default)]),
         Some(LaunchWith::Native) => tf("The former native client is unavailable. This retail account now uses {default}.", &[("default", &default)]),
         Some(LaunchWith::Vanilla) => t("Starts FFXI directly, without Windower or Ashita.").into(),
         Some(tool) => tf("Signs in without PlayOnline and starts the game through {tool}.", &[("tool", &tool)]),
-    };
+    } };
     let found = &app.launch_tools.detected;
     let (tool, tool_label, tool_note, labels, values, tool_current) = match account.effective_launch_with(default) {
         LaunchWith::Ashita => {
             let base = app.settings.ashita_boot_ini.trim();
             let base = if base.is_empty() { crate::pol_less::tools::DEFAULT_BOOT_INI } else { base };
             let (labels, values, current) = picks(tf("Default ({name})", &[("name", &base)]), &found.boot_inis, account.ashita_boot_ini.as_ref(), |name| tf("{name} (missing)", &[("name", &name)]));
-            let note = if found.ashita.is_none() { t("Ashita was not found. Set its folder in Settings → System → Launch tools.") } else { "" };
+            let note = if found.ashita.is_none() { t("Ashita was not found. Set its folder in Settings → System → Launch tools.").to_owned() } else { String::new() };
             (1, t("Ashita boot config"), note, labels, values, current)
         }
         LaunchWith::Windower => {
             let base = app.settings.windower_profile.trim();
             let base = if base.is_empty() { t("Windower's default profile") } else { base };
             let (labels, values, current) = picks(tf("Default ({name})", &[("name", &base)]), &found.profiles, account.windower_profile.as_ref(), |name| tf("{name} (not in settings.xml)", &[("name", &name)]));
-            let note = if found.windower.is_none() { t("Windower was not found. Set its folder in Settings → System → Launch tools.") } else { "" };
+            let note = if found.windower.is_none() {
+                t("Windower was not found. Set its folder in Settings → System → Launch tools.").to_owned()
+            } else if account.windower_profile.is_none() && app.settings.windower_profile.trim().is_empty() {
+                // What "Default" means here was easy to miss: not one of the named profiles.
+                "Default starts Windower's unnamed default profile, not one of your named ones. Pick a profile to use its settings and keybinds.".to_owned()
+            } else { String::new() };
             (2, t("Windower profile"), note, labels, values, current)
         }
-        LaunchWith::Native | LaunchWith::Vanilla => (0, "", "", Vec::new(), Vec::new(), -1),
+        LaunchWith::Native | LaunchWith::Vanilla => (0, "", String::new(), Vec::new(), Vec::new(), -1),
     };
     state.tool = tool;
     state.tool_values = values;
@@ -1285,6 +1309,7 @@ fn sheet(view: &View, app: &App, state: &mut State) {
         tool_current,
         tool_note: tool_note.into(),
         edit_profiles_enabled: found.windower.is_some() && !app.windower_editor_open,
+        hairpin: !flags.no_hairpin,
         auto_login: editor.auto_login.enabled,
         slot: i32::from(editor.auto_login.character_slot.clamp(1, 16)) - 1,
         folder_masked: privacy,

@@ -63,6 +63,20 @@ struct Request {
     elapsed_ms: u64,
     #[serde(default)]
     clicked_clock: Option<crate::launch_timing::MonotonicStamp>,
+    /// Private-server accounts: pass `--hairpin` to xiloader. A request from an older window
+    /// has none, and gets the old behavior (on).
+    #[serde(default = "hairpin_on")]
+    hairpin: bool,
+}
+const fn hairpin_on() -> bool { true }
+
+/// This worker's request asked for `--hairpin` (`Request::hairpin`). A worker serves one
+/// request, so the sign-in reads it here instead of through every login signature.
+static PRIVATE_HAIRPIN: AtomicBool = AtomicBool::new(true);
+
+/// Whether the private-server launch this worker is running passes `--hairpin`.
+pub(crate) fn private_hairpin() -> bool {
+    PRIVATE_HAIRPIN.load(Ordering::Acquire)
 }
 impl Drop for Request {
     fn drop(&mut self) {
@@ -1127,6 +1141,7 @@ fn serve(mut request: Request, login: Box<Login<'_>>, emit: &mut dyn FnMut(&Even
             },
         )?;
         let clicked = crate::launch_timing::MonotonicStamp::restore(request.clicked_clock, request.elapsed_ms);
+        PRIVATE_HAIRPIN.store(request.hairpin, Ordering::Release);
         let launch = {
             let mut progress = |message: &str| emit(&Event::Progress(message.to_owned()));
             login(
@@ -1457,6 +1472,7 @@ impl ParkWorker {
             via: Some(via),
             elapsed_ms: clicked.elapsed().as_millis().min(u64::MAX as u128) as u64,
             clicked_clock: crate::launch_timing::MonotonicStamp::capture(clicked),
+            hairpin: true,
         };
         let bytes = Zeroizing::new(serde_json::to_vec(&request).map_err(|_| otp.to_string())?);
         drop(request);
@@ -1958,11 +1974,42 @@ fn next_line<T: serde::de::DeserializeOwned>(input: &mut impl BufRead, prefix: &
 }
 
 fn launch_command(
+    command: Command,
+    config: &Config,
+    account: Account,
+    otp: Zeroizing<String>,
+    via: Option<Plan>,
+    clicked: Instant,
+    progress: impl FnMut(&str),
+) -> Result<LaunchResult, String> {
+    launch_command_with(command, config, account, otp, via, true, clicked, progress)
+}
+
+/// A private-server account's launch, in its own session worker like a retail one: xiloader
+/// on its own (`via` None) or through Windower or Ashita. No PlayOnline readiness applies.
+pub(crate) fn launch_private(
+    config: &Config,
+    account: Account,
+    otp: String,
+    via: Option<Plan>,
+    hairpin: bool,
+    clicked: Instant,
+    progress: impl FnMut(&str),
+) -> Result<LaunchResult, String> {
+    if account.mode != backend::AccountMode::Private {
+        return Err("Only private-server accounts launch through xiloader.".into());
+    }
+    launch_command_with(session_worker_command()?, config, account, Zeroizing::new(otp), via, hairpin, clicked, progress)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn launch_command_with(
     mut command: Command,
     config: &Config,
     account: Account,
     mut otp: Zeroizing<String>,
     via: Option<Plan>,
+    hairpin: bool,
     clicked: Instant,
     mut progress: impl FnMut(&str),
 ) -> Result<LaunchResult, String> {
@@ -2012,6 +2059,7 @@ fn launch_command(
         via,
         elapsed_ms: clicked.elapsed().as_millis().min(u64::MAX as u128) as u64,
         clicked_clock: crate::launch_timing::MonotonicStamp::capture(clicked),
+        hairpin,
     };
     let bytes = Zeroizing::new(
         serde_json::to_vec(&request).map_err(|_| t("Could not prepare the session request."))?,
@@ -2996,7 +3044,20 @@ mod tests {
     }
 
     fn play_request(config: &Config, account: Account, trigger: crate::launch_timing::LaunchTrigger) -> Request {
-        Request { config: config.clone(), account, otp: "123456".into(), via: Some(Plan { trigger, ..park_plan() }), elapsed_ms: 0, clicked_clock: None }
+        Request { config: config.clone(), account, otp: "123456".into(), via: Some(Plan { trigger, ..park_plan() }), elapsed_ms: 0, clicked_clock: None, hairpin: true }
+    }
+
+    /// A request from a window that predates the hairpin choice keeps xiloader's --hairpin on.
+    #[test]
+    fn a_request_without_a_hairpin_choice_keeps_hairpin_on() {
+        let fixture = Fixture::new();
+        let mut request = play_request(&config(&fixture.0), account(), crate::launch_timing::LaunchTrigger::Play);
+        request.hairpin = false;
+        let mut value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["hairpin"], serde_json::Value::Bool(false));
+        assert!(!serde_json::from_value::<Request>(value.clone()).unwrap().hairpin);
+        value.as_object_mut().unwrap().remove("hairpin");
+        assert!(serde_json::from_value::<Request>(value).unwrap().hairpin);
     }
 
     /// 07d §1.4: frame 1 never carries a password, OTP or authenticator key.

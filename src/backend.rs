@@ -274,7 +274,10 @@ impl Account {
     /// What this account launches with, given the global default.
     pub(crate) fn effective_launch_with(&self, default: LaunchWith) -> LaunchWith {
         match self.mode {
-            AccountMode::Private => LaunchWith::Native,
+            // Native here means xiloader on its own.
+            AccountMode::Private => self.launch_with
+                .filter(|tool| matches!(tool, LaunchWith::Windower | LaunchWith::Ashita))
+                .unwrap_or(LaunchWith::Native),
             AccountMode::Retail => self.launch_with.filter(|tool| *tool != LaunchWith::Native).unwrap_or(default).retail(),
         }
     }
@@ -708,8 +711,8 @@ pub(crate) fn unique_id() -> Result<String, String> {
 
 /// Sign in and start the client. Every launch that ends in an error is also written to the
 /// launch history; launches that start are recorded by their supervisor when the client exits.
-/// Retail accounts require an Ashita or Windower plan. Saved private-server
-/// accounts remain readable while their launch route is unavailable.
+/// Retail accounts require an Ashita or Windower plan. Private-server accounts run xiloader,
+/// directly (no plan) or through Windower or Ashita (`private_server`).
 pub fn login_with_progress(
     config: &Config,
     account: Account,
@@ -736,7 +739,12 @@ fn login_inner(
     mut progress: impl FnMut(&str),
 ) -> Result<LaunchResult, String> {
     let otp = Zeroizing::new(otp);
-    let plan = via.filter(|_| account.mode == AccountMode::Retail)
+    if account.mode == AccountMode::Private {
+        validate_account(&account)?;
+        let hairpin = crate::session_worker::private_hairpin();
+        return crate::private_server::launch(config, account, otp, via, hairpin, timing, progress);
+    }
+    let plan = via
         .ok_or_else(|| t("The native client is temporarily unavailable. Retail accounts must launch through Windower or Ashita; saved private-server accounts are kept.").to_owned())?;
     validate_account(&account)?;
     crate::pol_less::launch(config, &plan, account, otp, timing, &mut progress)
@@ -779,14 +787,29 @@ mod tests {
     }
 
     #[test]
-    fn disabled_launch_routes_stop_before_local_preflight_or_authentication() {
+    fn a_retail_account_without_a_launch_tool_stops_before_authentication() {
         let config = Config { experiment: PathBuf::from("missing-fixture"),
             repository: PathBuf::from("missing-fixture"), game_install: None, dat_overlays: Vec::new() };
-        for value in [account(), retail()] {
-            let error = login_inner(&config, value, String::new(), None, Timeline::begin(), |_| {})
-                .unwrap_err();
-            assert!(error.contains("temporarily unavailable"));
-        }
+        let error = login_inner(&config, retail(), String::new(), None, Timeline::begin(), |_| {}).unwrap_err();
+        assert!(error.contains("temporarily unavailable"));
+    }
+
+    #[test]
+    fn a_private_account_goes_to_xiloader_and_stops_at_a_missing_game_folder() {
+        let config = Config { experiment: PathBuf::from("missing-fixture"),
+            repository: PathBuf::from("missing-fixture"), game_install: Some(PathBuf::from("missing-fixture/game")), dat_overlays: Vec::new() };
+        let error = login_inner(&config, account(), String::new(), None, Timeline::begin(), |_| {}).unwrap_err();
+        assert!(error.contains("FINAL FANTASY XI folder does not exist"), "{error}");
+    }
+
+    #[test]
+    fn private_accounts_launch_with_xiloader_windower_or_ashita() {
+        let mut private = account();
+        assert_eq!(private.effective_launch_with(LaunchWith::Ashita), LaunchWith::Native, "no choice: xiloader on its own");
+        private.launch_with = Some(LaunchWith::Windower);
+        assert_eq!(private.effective_launch_with(LaunchWith::Ashita), LaunchWith::Windower);
+        private.launch_with = Some(LaunchWith::Vanilla);
+        assert_eq!(private.effective_launch_with(LaunchWith::Windower), LaunchWith::Native);
     }
 
     #[test]

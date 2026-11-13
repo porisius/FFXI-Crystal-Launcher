@@ -145,7 +145,16 @@ pub(crate) fn row_view(app: &App, item: &crate::AccountRow) -> RowView {
             }
             row
         }
-        RowState::Private => view(t("Private server").into(), t("client temporarily unavailable").into()),
+        // A private-server account plays through xiloader: no sign-in step, no one-time code
+        // field (xiloader takes the account's own). A failed launch says why, with its log.
+        RowState::Private => {
+            let detail = if item.problem { item.status_text().into_owned() } else { crate::privacy::mask(item.account.server.trim()) };
+            let mut row = view(t("Private server").into(), detail);
+            if idle && item.can_play() && app.vault_ready && !app.launch_blocked() {
+                row.action = Some((t("Play").into(), Message::Launch(item.key.clone()), true));
+            }
+            row
+        }
         RowState::NeedsCode => {
             let mut row = view(
                 t("Needs a one-time password").into(),
@@ -185,6 +194,29 @@ pub(crate) fn row_view(app: &App, item: &crate::AccountRow) -> RowView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A private-server account offers Play (xiloader takes no PlayOnline sign-in), names its
+    /// server, and says why its last launch failed.
+    #[test]
+    fn a_private_server_row_offers_play_and_names_its_server() {
+        crate::i18n::set(crate::i18n::Lang::En);
+        let mut app = crate::tests::app();
+        app.vault_ready = true;
+        let row = &mut app.accounts[2];
+        row.account.mode = AccountMode::Private;
+        row.account.server = "ffxi.example.test".into();
+        let key = row.key.clone();
+        let line = row_view(&app, &app.accounts[2]);
+        assert_eq!(row_state(&app, &app.accounts[2]), RowState::Private);
+        assert_eq!((line.label.as_str(), line.detail.as_str()), (t("Private server"), "ffxi.example.test"));
+        assert!(!line.otp);
+        assert!(matches!(&line.action, Some((_, Message::Launch(k), true)) if *k == key));
+        app.accounts[2].problem = true;
+        app.accounts[2].status = "xiloader was not found".into();
+        assert_eq!(row_view(&app, &app.accounts[2]).detail, "xiloader was not found");
+        app.accounts[2].busy = true;
+        assert!(row_view(&app, &app.accounts[2]).action.is_none());
+    }
 
     /// A signed-in account plays at once, an OTP account asks for its code and signs in only
     /// once one is typed, an idle one offers a background sign-in.

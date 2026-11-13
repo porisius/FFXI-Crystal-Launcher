@@ -210,6 +210,27 @@ pub(crate) fn ashita_boot_ini(base: Option<&[u8]>, loader: &Path, pipe: &str, la
     Ok(ini)
 }
 
+/// The boot ini for a private-server launch through Ashita: the user's base with the boot
+/// keys pointed at the server's xiloader and its arguments (`command`). Unlike the retail ini,
+/// the language is left as the user set it: xiloader takes its own `--lang`.
+pub(crate) fn ashita_private_boot_ini(base: Option<&[u8]>, loader: &Path, command: &str) -> Result<Vec<u8>, String> {
+    // GetPrivateProfileStringA reads the file in the ANSI code page.
+    let loader = loader.to_str().filter(|s| s.is_ascii()).ok_or_else(|| {
+        "Ashita reads its boot file as ANSI text, so xiloader must be in a folder whose path uses only plain (ASCII) characters.".to_owned()
+    })?;
+    if command.contains(['\r', '\n']) {
+        return Err("The xiloader command cannot contain line breaks.".into());
+    }
+    let edits = [
+        Edit { section: "ashita.boot", key: "file", value: loader.to_owned(), only_if_missing: false },
+        Edit { section: "ashita.boot", key: "command", value: command.to_owned(), only_if_missing: false },
+        Edit { section: "ashita.boot", key: "gamemodule", value: "ffximain.dll".into(), only_if_missing: false },
+        Edit { section: "ashita.boot", key: "script", value: "default.txt".into(), only_if_missing: true },
+        Edit { section: "ashita.polplugins", key: "sandbox", value: "0".into(), only_if_missing: false },
+    ];
+    Ok(edit_ini(base.unwrap_or(MINIMAL_BOOT_INI.as_bytes()), &edits))
+}
+
 /// POL plugins that crash when two game hosts load them at once ("Failed to load POL plugin
 /// 'pivot'"). An Ashita start whose boot ini loads one of these takes the machine-wide turn;
 /// every other Ashita start goes at once. Add a name here if another plugin proves to race.
@@ -429,6 +450,25 @@ pub(crate) fn windower_command(
     command
         .arg(format!("--executable={}", loader.display()))
         .arg(format!("--args={}", loader_args(pipe, launcher_pid)))
+        .current_dir(windower);
+    private_stdio(&mut command);
+    Ok(command)
+}
+
+/// `Windower.exe --hide --profile=<p> --executable=<program> --args=<arguments>` for a program
+/// that is not Crystal's loader (a private server's xiloader), run from Windower's folder.
+pub(crate) fn windower_command_with_args(windower: &Path, profile: &str, executable: &Path, arguments: &str) -> Result<Command, String> {
+    let profile = profile.trim();
+    if !valid_profile(profile) {
+        return Err(t("The Windower profile name can't contain quotes or control characters.").into());
+    }
+    let mut command = Command::new(windower.join(Tool::Windower.exe()));
+    // Long option forms only: Windower's -h means both --hide and --height.
+    command.arg("--hide");
+    command.arg(format!("--profile={profile}"));
+    command
+        .arg(format!("--executable={}", executable.display()))
+        .arg(format!("--args={arguments}"))
         .current_dir(windower);
     private_stdio(&mut command);
     Ok(command)

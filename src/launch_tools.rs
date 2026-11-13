@@ -433,11 +433,17 @@ mod tests {
         // Legacy retail Native choices use the available default launcher.
         account.launch_with = Some(LaunchWith::Native);
         assert_eq!(settings.launch_plan(&account).unwrap().tool, Tool::Windower);
-        // Private-server profiles stay stored, with no available launch plan.
+        // Private-server accounts start xiloader through their own Windower or Ashita choice,
+        // or on its own (no plan); never through the global default or Vanilla.
         let mut private = retail();
         private.mode = crate::backend::AccountMode::Private;
         private.launch_with = Some(LaunchWith::Windower);
+        assert_eq!(settings.launch_with_for(&private), LaunchWith::Windower);
+        assert_eq!(settings.launch_plan(&private).unwrap().tool, Tool::Windower);
+        private.launch_with = None;
         assert_eq!(settings.launch_with_for(&private), LaunchWith::Native);
+        assert!(settings.launch_plan(&private).is_none());
+        private.launch_with = Some(LaunchWith::Vanilla);
         assert!(settings.launch_plan(&private).is_none());
     }
 

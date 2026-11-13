@@ -2118,17 +2118,24 @@ fn installer_failure_is_visible_until_the_next_folder_or_attempt() {
     assert!(app.installer_error.is_none());
 }
 
+/// A private-server Play starts on its own, ahead of everything that only concerns
+/// PlayOnline (the first status read, FFXI's maintenance, the coordinated batch); a sign-in
+/// only leaves it alone.
 #[test]
-fn disabled_private_client_cannot_launch_and_keeps_the_saved_profile() {
+fn a_private_server_play_starts_by_itself_and_a_sign_in_skips_it() {
     let mut app = app();
     app.preview = false;
+    app.launches = Some(Vec::new());
     app.accounts[0].account.mode = AccountMode::Private;
-    let key = app.accounts[0].key.clone();
-    assert!(!app.launch_keys(false).contains(&key));
-    app.play(vec![key.clone()]);
-    assert!(!app.accounts[0].busy);
-    assert!(app.accounts[0].status.contains("temporarily unavailable"));
-    assert_eq!(app.accounts[0].key, key);
+    let private = app.accounts[0].key.clone();
+    assert!(app.launch_keys(false).contains(&private), "Play all includes it");
+    assert!(!app.wait_keys().contains(&private), "it never waits for FFXI's maintenance");
+    app.play(vec![private.clone()]);
+    let launches = app.launches.replace(Vec::new()).unwrap();
+    assert_eq!(launches.iter().map(|launch| launch.0.clone()).collect::<Vec<_>>(), vec![vec![private.clone()]]);
+    assert!(!launches[0].1, "a game start, not a sign-in");
+    app.connect(vec![private.clone()]);
+    assert!(app.launches.as_ref().unwrap().is_empty());
     assert_eq!(app.accounts.len(), 3);
 }
 
@@ -3950,7 +3957,7 @@ fn a_play_that_goes_ahead_replaces_its_accounts_wait() {
     let mut app = app();
     app.preview = false;
     let (key, other) = (app.accounts[0].key.clone(), app.accounts[1].key.clone());
-    // Private-server rows: their Plays stop at the row note, with no worker to start.
+    // Private-server rows: their Plays start no worker in tests (`start_private`).
     app.accounts[0].account.mode = AccountMode::Private;
     app.accounts[1].account.mode = AccountMode::Private;
     app.waiting_plays.push(WaitingPlay { keys: vec![key.clone(), other.clone()], otp: Vec::new(), armed: Instant::now(), codes: Vec::new() });

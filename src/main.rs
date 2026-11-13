@@ -50,9 +50,11 @@ mod pol_less;
 mod portraits;
 mod preview;
 mod privacy;
+mod private_server;
 mod retail_region;
 mod services;
 mod self_update;
+mod server_manifest;
 mod session_worker;
 mod launcher_change;
 mod start_watch;
@@ -484,6 +486,8 @@ pub(crate) struct EditorFlags {
     pub show_totp_key: bool,
     /// A saved account's authenticator key, when it has one, is read-only until Change.
     pub change_totp_key: bool,
+    /// Private-server accounts: run xiloader without `--hairpin` (`Settings::account_no_hairpin`).
+    pub no_hairpin: bool,
 }
 
 /// Which of `EditorFlags` an `EditorFlag` message sets.
@@ -496,6 +500,7 @@ pub(crate) enum EditorFlag {
     ChangePassword,
     ShowTotpKey,
     ChangeTotpKey,
+    NoHairpin,
 }
 
 impl Editor {
@@ -1265,10 +1270,11 @@ impl App {
         if self.launch_blocked() {
             return Vec::new();
         }
-        // Row keys are unique (`replace_accounts`).
+        // Row keys are unique (`replace_accounts`). Private-server accounts play too: their
+        // launches leave the PlayOnline steps out (`start_launch`).
         self.accounts
             .iter()
-            .filter(|r| r.account.mode == AccountMode::Retail && r.can_play() && (!selected_only || r.selected))
+            .filter(|r| r.can_play() && (!selected_only || r.selected))
             .map(|r| r.key.clone())
             .collect()
     }
@@ -1287,7 +1293,10 @@ impl App {
     }
     /// The selected accounts "Wait and play" would set waiting: launchable, not waiting yet.
     pub(crate) fn wait_keys(&self) -> Vec<String> {
-        self.launch_keys(true).into_iter().filter(|key| !self.is_waiting(key)).collect()
+        // FFXI's maintenance is the retail servers': a private server's Play never waits for it.
+        self.launch_keys(true).into_iter()
+            .filter(|key| !self.is_waiting(key) && self.accounts.iter().any(|row| row.key == *key && row.account.mode == AccountMode::Retail))
+            .collect()
     }
     fn has_sessions(&self) -> bool {
         self.accounts.iter().any(|r| r.shutting_down || r.signing_out || r.busy || r.batch_pending || r.pid.is_some()
@@ -1852,7 +1861,7 @@ impl App {
                         .as_ref()
                         .is_none_or(|s| s.contains(&key)),
                     key,
-                    status: if account.mode == AccountMode::Retail { t("Ready to launch") } else { t("Private-server client temporarily unavailable") }.into(),
+                    status: t("Ready to launch").into(),
                     account,
                     otp: String::new(),
                     busy: false,
@@ -2135,6 +2144,15 @@ impl App {
     /// A sign-in only (startup, Connect) is never gated: PlayOnline is up during FFXI
     /// maintenance and a stock user can sign in then.
     fn start_launch(&mut self, keys: Vec<String>, social_only: bool, clicked: Instant, trigger: Option<launch_timing::LaunchTrigger>) {
+        // Private-server accounts have no PlayOnline sign-in, so nothing below (the Viewer's
+        // update, FFXI's maintenance, the coordinated batch) applies: they start at once, and a
+        // sign-in only (startup, Connect, after a game) leaves them alone.
+        let (private, keys): (Vec<String>, Vec<String>) = keys.into_iter().partition(|key|
+            self.accounts.iter().any(|row| row.key == *key && row.account.mode == AccountMode::Private));
+        if !social_only {
+            for key in &private { self.start_private(key, clicked); }
+        }
+        if keys.is_empty() { return; }
         self.prefetch_startup_files(&keys);
         // While PlayOnline updates for sign-ins its W2U stopped (or is about to), another
         // sign-in would only be stopped the same way: it waits for that one update instead.
@@ -3129,6 +3147,7 @@ impl App {
         // Which tools this batch starts, for the status line.
         let mut tools: Vec<&'static str> = Vec::new();
         let mut all_native = true;
+        let mut private = Vec::new();
         // One worker per account: every sign-in starts now and runs in parallel; only the
         // Ashita/Windower start inside each worker waits its turn (pol_less::TurnGate: the
         // machine-wide windower.lock and ashita.lock in session_worker).
@@ -3154,8 +3173,9 @@ impl App {
                 continue;
             }
             let account = row.account.clone();
-            if account.mode != AccountMode::Retail {
-                row.status = t("Private-server client temporarily unavailable; saved account kept.").into();
+            if account.mode == AccountMode::Private {
+                // Every Play goes through `start_launch`, which starts these on their own.
+                if !social_only { private.push(key.clone()); }
                 continue;
             }
             // Signing in again must never turn an existing Friends session into a game launch.
@@ -3350,6 +3370,65 @@ impl App {
             }
         }
         self.status = launch_status(social_only, all_native, count, &tools);
+        for key in private { self.start_private(&key, clicked); }
+    }
+
+    /// Start a private-server account's game: xiloader on its own, or through the account's
+    /// Windower or Ashita, in the account's own session worker (`session_worker::launch_private`).
+    fn start_private(&mut self, key: &str, clicked: Instant) {
+        #[cfg(test)]
+        if let Some(launches) = &mut self.launches {
+            launches.push((vec![key.to_owned()], false, clicked, None));
+        }
+        // Unit tests never start a worker: the test binary is not Crystal.
+        if cfg!(test) { return; }
+        if self.launch_blocked() {
+            self.status = if self.windower_editor_open {
+                t("Close Windower's profile editor before starting another session.")
+            } else {
+                t("Game launches are paused while files are being changed or official setup is running.")
+            }.into();
+            return;
+        }
+        if self.preview || !self.vault_ready || self.vault_saving { return; }
+        let hairpin = !self.settings.account_no_hairpin.contains(key);
+        let Some(row) = self.accounts.iter_mut().find(|row| row.key == key && row.can_play()) else { return };
+        if row.busy || row.pid.is_some() { return; }
+        let account = row.account.clone();
+        let config = self.settings.config_for(&self.config, &account);
+        let via = self.launch_tools.launch_plan(&self.settings, &account);
+        let launcher = via.as_ref().map_or("xiloader", |plan| plan.tool.name());
+        row.launch_generation = row.launch_generation.wrapping_add(1);
+        let generation = row.launch_generation;
+        row.signed_out = false;
+        row.game_seen = false;
+        row.resign_declined = false;
+        row.launch_trigger = None;
+        row.network_wait = None;
+        row.busy = true;
+        row.preparing_session = false;
+        row.problem = false;
+        row.timing.clear();
+        row.play_timing = None;
+        // xiloader takes the account's own one-time code when one was typed on its row.
+        let otp = std::mem::take(&mut row.otp);
+        row.otp_spent = !otp.is_empty();
+        row.otp_unknown = false;
+        row.status = format!("Starting the private-server client through {launcher}…");
+        let label = account.label.clone();
+        let tx = LaunchTx::new(self.sender.clone(), key.to_owned(), generation);
+        let spawned = std::thread::Builder::new().name("xi-private-login".into()).spawn(move || {
+            let result = session_worker::launch_private(&config, account, otp, via, hairpin, clicked, |line| tx.progress(line));
+            tx.complete(result);
+        });
+        if spawned.is_err() {
+            row.busy = false;
+            row.problem = true;
+            row.otp_spent = false;
+            row.status = "Could not start the private-server launch worker.".into();
+            return;
+        }
+        self.status = format!("{label}: starting the private-server client through {launcher}…");
     }
 
     /// The Play `keys` less those whose signed-in session cannot take this Play's plan (the
@@ -5393,7 +5472,11 @@ impl App {
                         game_install: self.settings.account_installs.get(&key).cloned().unwrap_or_default(),
                         dat_overlays: self.settings.account_overlays.get(&key).cloned().unwrap_or_default(),
                         auto_login: self.settings.account_auto_login.get(&key).copied().unwrap_or_default().normalized(),
-                        flags: EditorFlags { uses_otp: self.settings.account_otp.contains(&key), ..Default::default() },
+                        flags: EditorFlags {
+                            uses_otp: self.settings.account_otp.contains(&key),
+                            no_hairpin: self.settings.account_no_hairpin.contains(&key),
+                            ..Default::default()
+                        },
                         key: Some(key),
                         account: row.account.clone(),
                     });
@@ -5438,6 +5521,7 @@ impl App {
                         EditorFlag::ChangePassword => flags.change_password = on,
                         EditorFlag::ShowTotpKey => flags.show_totp_key = on,
                         EditorFlag::ChangeTotpKey => flags.change_totp_key = on,
+                        EditorFlag::NoHairpin => flags.no_hairpin = on,
                     }
                 }
             }
@@ -5869,6 +5953,9 @@ impl App {
                                 if let Some(choice) = settings.account_auto_login.remove(previous) {
                                     settings.account_auto_login.insert(key.clone(), choice);
                                 }
+                                if settings.account_no_hairpin.remove(previous) {
+                                    settings.account_no_hairpin.insert(key.clone());
+                                }
                                 if let Some(selected) = &mut settings.selected_accounts {
                                     if selected.remove(previous) { selected.insert(key); }
                                 }
@@ -5884,6 +5971,7 @@ impl App {
                         // Learned from sign-ins of that login: a changed login learns it again.
                         settings.account_otp.retain(|key| saved.contains(key));
                         settings.account_no_otp.retain(|key| saved.contains(key));
+                        settings.account_no_hairpin.retain(|key| saved.contains(key));
                         settings.account_order.retain(|key| saved.contains(key));
                         if let Some(selected) = &mut settings.selected_accounts { selected.retain(|key| saved.contains(key)); }
                         if self.play_updates.viewer_confirm.as_ref().is_some_and(|(key, _)| !saved.contains(key)) { self.play_updates.viewer_confirm = None; }
@@ -5903,6 +5991,11 @@ impl App {
                                 } else {
                                     settings.account_otp.remove(&key);
                                 }
+                                if editor.flags.no_hairpin && editor.account.mode == AccountMode::Private {
+                                    settings.account_no_hairpin.insert(key.clone());
+                                } else {
+                                    settings.account_no_hairpin.remove(&key);
+                                }
                                 if editor.auto_login != pol_less::AutoLogin::default() {
                                     settings.account_auto_login.insert(key, editor.auto_login.normalized());
                                 } else { settings.account_auto_login.remove(&key); }
@@ -5915,7 +6008,8 @@ impl App {
                             || settings.account_order != self.settings.account_order
                             || settings.account_pol_handles != self.settings.account_pol_handles
                             || settings.account_otp != self.settings.account_otp
-                            || settings.account_no_otp != self.settings.account_no_otp) && !self.preview {
+                            || settings.account_no_otp != self.settings.account_no_otp
+                            || settings.account_no_hairpin != self.settings.account_no_hairpin) && !self.preview {
                             if let Err(error) = save_settings(&self.config, &settings) {
                                 if let Some(editor) = &mut self.editor {
                                     let key = account_key(&editor.account);
@@ -6343,14 +6437,12 @@ const STATUS_TEXTS: [&str; 13] = [
     "Finding FINAL FANTASY XI…",
     "No installed FFXI folder was found. Run official setup or use Browse.",
 ];
-const ROW_TEXTS: [&str; 13] = [
+const ROW_TEXTS: [&str; 11] = [
     "Checking whether FINAL FANTASY XI is up…",
     "FFXI is down for maintenance. Starting as soon as it's back…",
     "FFXI's worlds are down. Starting as soon as they're back…",
     "FFXI is back — enter your one-time password to start",
     "Ready to launch",
-    "Private-server client temporarily unavailable",
-    "Private-server client temporarily unavailable; saved account kept.",
     "Signed in to PlayOnline · FFXI is closed",
     "Client started · continue in game",
     "Client closed",

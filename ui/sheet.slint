@@ -225,7 +225,17 @@ export component AccountSheet inherits SideSheet {
                 }
                 Note { text: View.sheet.launch-hint; }
             }
-            if View.sheet.retail && View.sheet.tool != 0: Labelled {
+            if !View.sheet.retail: Labelled {
+                caption: View.sheet-strings.launch-with;
+                Segmented {
+                    modal: true;
+                    items: View.private-launch-choices;
+                    current: View.sheet.launch-index;
+                    picked(index) => { View.sheet-launch(index); }
+                }
+                Note { text: View.sheet.launch-hint; }
+            }
+            if View.sheet.tool != 0: Labelled {
                 caption: View.sheet.tool-label;
                 Select {
                     modal: true;
@@ -247,6 +257,13 @@ export component AccountSheet inherits SideSheet {
                         clicked => { View.edit-profiles(); }
                     }
                 }
+            }
+            if !View.sheet.retail: CheckNote {
+                modal: true;
+                text: View.sheet-strings.hairpin;
+                note: View.sheet-strings.hairpin-note;
+                checked: View.sheet.hairpin;
+                toggled(on) => { View.sheet-flag(7, !on); }
             }
             if View.sheet.retail: VerticalLayout {
                 spacing: 10px;

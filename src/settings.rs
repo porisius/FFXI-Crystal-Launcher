@@ -69,6 +69,9 @@ pub(crate) struct Settings {
     /// in neither set has not been seen signing in yet.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub account_no_otp: BTreeSet<String>,
+    /// Private-server accounts that run xiloader without `--hairpin` (it is on by default).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub account_no_hairpin: BTreeSet<String>,
     /// Sign known accounts in when the launcher opens.
     #[serde(default = "default_true")]
     pub auto_sign_in: bool,
@@ -148,6 +151,7 @@ impl Default for Settings {
             account_auto_login: HashMap::new(),
             account_otp: BTreeSet::new(),
             account_no_otp: BTreeSet::new(),
+            account_no_hairpin: BTreeSet::new(),
             auto_sign_in: true,
             sign_in_after_game: false,
             close_games_instantly: false,

@@ -159,6 +159,8 @@ export struct SheetStrings {
     display-name: string,
     display-placeholder: string,
     private-note: string,
+    hairpin: string,
+    hairpin-note: string,
     server: string,
     server-placeholder: string,
     show: string,
@@ -237,6 +239,8 @@ export struct Sheet {
     tool-current: int,
     tool-note: string,
     edit-profiles-enabled: bool,
+    /// Private-server accounts: xiloader gets --hairpin.
+    hairpin: bool,
     auto-login: bool,
     slot: int,
     folder-masked: bool,
@@ -373,6 +377,8 @@ export global View {
     in property <Sheet> sheet;
     in property <[string]> regions;
     in property <[string]> launch-choices;
+    /// A private-server account's Launch with: xiloader, Windower, Ashita.
+    in property <[string]> private-launch-choices;
     in property <[string]> tool-items;
     in property <[string]> slot-items;
     in-out property <string> sheet-label;
@@ -393,7 +399,7 @@ export global View {
     callback sheet-region(int);
     callback sheet-launch(int);
     /// crate::EditorFlag's order: uses OTP, sign in now, show ID, show password, change password,
-    /// show authenticator key, change authenticator key.
+    /// show authenticator key, change authenticator key, no hairpin.
     callback sheet-flag(int, bool);
     callback sheet-auto-login(bool);
     callback sheet-slot(int);
